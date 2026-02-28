@@ -29,5 +29,8 @@ MAX_POSITION = 100
 COMPETITION_DURATION_HOURS = 24
 SETTLEMENT_HOUR = 12  # noon London time
 
+# Arbitrage
+MIN_ARB_EDGE = 2.0  # minimum ticks of edge to trigger arb
+
 # Rate limit
 MAX_REQUESTS_PER_SECOND = 1

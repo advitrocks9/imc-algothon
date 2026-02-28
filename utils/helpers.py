@@ -28,6 +28,24 @@ def best_ask(ob: OrderBook) -> float | None:
     return None
 
 
+def best_bid_with_volume(ob: OrderBook) -> tuple[float, int] | None:
+    """Best bid price and available volume (excluding own orders)."""
+    for o in ob.buy_orders:
+        available = o.volume - o.own_volume
+        if available > 0:
+            return (o.price, available)
+    return None
+
+
+def best_ask_with_volume(ob: OrderBook) -> tuple[float, int] | None:
+    """Best ask price and available volume (excluding own orders)."""
+    for o in ob.sell_orders:
+        available = o.volume - o.own_volume
+        if available > 0:
+            return (o.price, available)
+    return None
+
+
 def mid_price(ob: OrderBook) -> float | None:
     b = best_bid(ob)
     a = best_ask(ob)
