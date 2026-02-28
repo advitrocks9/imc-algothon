@@ -6,15 +6,19 @@ import logging
 from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Trade, Side
 from config import (
     EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, MIN_ARB_EDGE,
-    MAX_SCRATCH_COST,
+    MAX_SCRATCH_COST, ARB_COOLDOWN_SECONDS, STRATEGY_WARMUP_TICKS,
+    REPRICE_THRESHOLD, STALE_ORDER_SECONDS,
 )
+from data.price_tracker import PriceTracker
 from execution.arbitrage import ArbitrageEngine
 from execution.executor import AsyncExecutor
 from execution.inventory import InventoryManager
+from execution.order_scheduler import OrderScheduler, RestingOrderManager
 from execution.scratch import ScratchRoutine
+from execution.strategies import STRATEGY_CONFIGS, compute_desired_orders
 from risk.manager import RiskManager
 from utils.rate_limiter import RateLimiter
-from utils.helpers import best_bid, best_ask, best_bid_with_volume, best_ask_with_volume, mid_price, snap_to_tick
+from utils.helpers import mid_price
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bot")
@@ -37,13 +41,28 @@ class TradingBot(BaseBot):
         self._books: dict[str, OrderBook] = {}
         self._book_event = threading.Event()
 
+        # Strategy components
+        self.price_tracker = PriceTracker(fast_period=5, slow_period=20)
+        self.order_scheduler = OrderScheduler()
+        self.resting_orders = RestingOrderManager(
+            reprice_threshold=REPRICE_THRESHOLD,
+            stale_seconds=STALE_ORDER_SECONDS,
+        )
+        self._arb_cooldown_until = 0.0
+        self._last_pnl_log = 0.0
 
     # --- SSE Callbacks ---
 
     def on_orderbook(self, orderbook: OrderBook) -> None:
-        """Cache latest book snapshot and wake the main loop."""
+        """Cache latest book snapshot, feed price tracker, and wake main loop."""
         with self._books_lock:
             self._books[orderbook.product] = orderbook
+
+        # Feed mid price to tracker (SSE is free — no rate limit cost)
+        mid = mid_price(orderbook)
+        if mid is not None:
+            self.price_tracker.update(orderbook.product, mid)
+
         self._book_event.set()
 
     def on_trades(self, trade: Trade) -> None:
@@ -71,6 +90,10 @@ class TradingBot(BaseBot):
     def safe_cancel_order(self, order_id: str) -> None:
         self.limiter.acquire()
         self.cancel_order(order_id)
+
+    def safe_get_pnl(self) -> dict:
+        self.limiter.acquire()
+        return self.get_pnl()
 
     def safe_get_orders(self, product: str | None = None) -> list[dict]:
         self.limiter.acquire()
@@ -148,13 +171,120 @@ class TradingBot(BaseBot):
             if self.scratch.needs_scratch(report):
                 self._execute_scratch(report)
 
-        # 6. Periodic cloud sync (every 60s, not every tick)
+            # 6. Arb cooldown — pause strategy orders to avoid 429s
+            self._arb_cooldown_until = time.monotonic() + ARB_COOLDOWN_SECONDS
+            return
+
+        # 7. Run strategy-based quoting (only if not in arb cooldown)
+        if time.monotonic() >= self._arb_cooldown_until:
+            self._strategy_tick(books)
+
+        # 8. Periodic PnL logging (every 30s)
+        now = time.monotonic()
+        if now - self._last_pnl_log >= 30:
+            self._log_pnl()
+            self._last_pnl_log = now
+
+        # 9. Periodic cloud sync (every 60s, not every tick)
         if self.inventory.needs_cloud_sync():
             self._cloud_sync()
 
+    # --- Strategy Engine ---
+
+    def _strategy_tick(self, books: dict[str, OrderBook]) -> None:
+        """Place/update GTC resting orders for one symbol per tick."""
+        symbol = self.order_scheduler.next_symbol()
+
+        if not self.price_tracker.warmup_complete(symbol, STRATEGY_WARMUP_TICKS):
+            return
+
+        position = self.inventory.get_position(symbol)
+        bid_price, ask_price, bid_size, ask_size = compute_desired_orders(
+            symbol, self.price_tracker, position,
+        )
+
+        need_bid, need_ask = self.resting_orders.needs_update(
+            symbol, bid_price, ask_price,
+        )
+
+        if need_bid or need_ask:
+            self._reconcile_orders(
+                symbol, bid_price, ask_price, bid_size, ask_size,
+                need_bid, need_ask,
+            )
+
+    def _reconcile_orders(
+        self,
+        symbol: str,
+        bid_price: float | None,
+        ask_price: float | None,
+        bid_size: int,
+        ask_size: int,
+        need_bid: bool,
+        need_ask: bool,
+    ) -> None:
+        """Cancel stale orders and place new ones. Each op costs 1 REST request."""
+        # Cancel stale bid
+        if need_bid:
+            old_bid_id = self.resting_orders.get_order_id(symbol, "BUY")
+            if old_bid_id is not None:
+                try:
+                    self.safe_cancel_order(old_bid_id)
+                except Exception:
+                    pass
+                self.resting_orders.clear_order(symbol, "BUY")
+
+            # Place new bid
+            if bid_price is not None and bid_size > 0:
+                order = OrderRequest(symbol, bid_price, Side.BUY, bid_size)
+                resp = self.safe_send_order(order)
+                if resp:
+                    self.resting_orders.record_order(symbol, "BUY", resp.id, bid_price)
+                    if resp.filled > 0:
+                        self.inventory.apply_fill(symbol, Side.BUY, resp.filled)
+                        self.risk.update_positions(self.inventory.positions)
+                        log.info(
+                            f"STRAT BID FILL: {symbol} BUY {resp.filled}x @ {bid_price}"
+                        )
+
+        # Cancel stale ask
+        if need_ask:
+            old_ask_id = self.resting_orders.get_order_id(symbol, "SELL")
+            if old_ask_id is not None:
+                try:
+                    self.safe_cancel_order(old_ask_id)
+                except Exception:
+                    pass
+                self.resting_orders.clear_order(symbol, "SELL")
+
+            # Place new ask
+            if ask_price is not None and ask_size > 0:
+                order = OrderRequest(symbol, ask_price, Side.SELL, ask_size)
+                resp = self.safe_send_order(order)
+                if resp:
+                    self.resting_orders.record_order(symbol, "SELL", resp.id, ask_price)
+                    if resp.filled > 0:
+                        self.inventory.apply_fill(symbol, Side.SELL, resp.filled)
+                        self.risk.update_positions(self.inventory.positions)
+                        log.info(
+                            f"STRAT ASK FILL: {symbol} SELL {resp.filled}x @ {ask_price}"
+                        )
+
+    # --- PnL Logging ---
+
+    def _log_pnl(self) -> None:
+        """Fetch and log PnL + positions from the exchange."""
+        try:
+            pnl = self.safe_get_pnl()
+            positions = self.inventory.positions
+            log.info(f"=== PnL: {pnl} | Positions: {dict(positions)} ===")
+        except Exception as e:
+            log.error(f"PnL fetch failed: {e}")
+
+    # --- Scratch & Sync ---
+
     def _execute_scratch(self, report) -> None:
         """Handle partial fills by reversing excess positions."""
-        # Re-read books for current market prices
         with self._books_lock:
             fresh_books = dict(self._books)
 
@@ -162,7 +292,6 @@ class TradingBot(BaseBot):
         if scratch_plan is None:
             return
 
-        # Skip scratch if estimated cost is too high — just sync positions instead
         if scratch_plan.expected_cost > MAX_SCRATCH_COST:
             log.warning(
                 f"SCRATCH SKIPPED: estimated cost={scratch_plan.expected_cost:.2f} "
@@ -176,14 +305,11 @@ class TradingBot(BaseBot):
             f"estimated cost={scratch_plan.expected_cost:.2f}"
         )
 
-        # Execute scratch orders concurrently
         scratch_report = self.executor.execute_ioc_batch(scratch_plan.orders)
 
-        # Update inventory from scratch fills
         self.inventory.apply_fills_from_report(scratch_report.legs)
         self.risk.update_positions(self.inventory.positions)
 
-        # Log scratch results
         for lr in scratch_report.legs:
             log.warning(
                 f"SCRATCH leg: {lr.order.product} {lr.order.side} "
@@ -200,7 +326,6 @@ class TradingBot(BaseBot):
                 f"Residual risk remains — forcing cloud sync."
             )
 
-        # Force cloud sync to reconcile after scratch
         self.inventory.mark_dirty()
 
     def _cloud_sync(self) -> None:
