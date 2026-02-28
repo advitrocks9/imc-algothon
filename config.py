@@ -33,7 +33,7 @@ COMP_START = datetime(2026, 2, 28, 14, 30, tzinfo=timezone.utc)     # Fri Feb 28
 SETTLEMENT_TIME = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)  # Sat March 1 12:00 PM UTC
 
 # Arbitrage
-MIN_ARB_EDGE = 2.5
+MIN_ARB_EDGE = 1.5   # tightened from 2.5 to capture more arb
 MIN_BOOK_DEPTH = 3   # minimum contracts available on each leg to attempt arb
 
 # Scratch
@@ -47,3 +47,7 @@ ARB_COOLDOWN_SECONDS = 8       # pause strategies after arb IOC burst
 STRATEGY_WARMUP_TICKS = 10     # min price updates before trading
 REPRICE_THRESHOLD = 3.0        # ticks of drift before repricing GTC order
 STALE_ORDER_SECONDS = 120.0    # force-reprice after this many seconds
+
+# Theo-based aggressive trading
+AGGRESSIVE_THRESHOLD = 0.008   # 0.8% deviation from theo triggers aggressive IOC
+AGGRESSIVE_ORDER_SIZE = 5      # contracts per aggressive IOC order

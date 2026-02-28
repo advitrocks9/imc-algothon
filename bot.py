@@ -5,9 +5,10 @@ import logging
 
 from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Trade, Side
 from config import (
-    EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, MIN_ARB_EDGE,
+    EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, GROUP_A, MIN_ARB_EDGE,
     MAX_SCRATCH_COST, ARB_COOLDOWN_SECONDS, STRATEGY_WARMUP_TICKS,
-    REPRICE_THRESHOLD, STALE_ORDER_SECONDS,
+    REPRICE_THRESHOLD, STALE_ORDER_SECONDS, AGGRESSIVE_THRESHOLD,
+    AGGRESSIVE_ORDER_SIZE,
 )
 from data.price_tracker import PriceTracker
 from execution.arbitrage import ArbitrageEngine
@@ -15,8 +16,11 @@ from execution.executor import AsyncExecutor
 from execution.inventory import InventoryManager
 from execution.order_scheduler import OrderScheduler, RestingOrderManager
 from execution.scratch import ScratchRoutine
-from execution.strategies import STRATEGY_CONFIGS, compute_desired_orders
+from execution.strategies import (
+    STRATEGY_CONFIGS, compute_desired_orders, compute_aggressive_ioc,
+)
 from risk.manager import RiskManager
+from theo.engine import TheoEngine
 from utils.rate_limiter import RateLimiter
 from utils.helpers import mid_price
 
@@ -50,6 +54,10 @@ class TradingBot(BaseBot):
         )
         self._arb_cooldown_until = 0.0
         self._last_pnl_log = 0.0
+        self._last_aggressive_tick = 0.0
+
+        # Theo engine — computes fair values from external data
+        self.theo_engine = TheoEngine()
 
     # --- SSE Callbacks ---
 
@@ -119,10 +127,15 @@ class TradingBot(BaseBot):
         self.start()
         log.info("SSE stream connected.")
 
+        # Start theo engine (background thread for external data)
+        self.theo_engine.start()
+        log.info("Theo engine started.")
+
         # Initial position sync — one-time REST call
         cloud_positions = self.safe_get_positions()
         self.inventory.initialize(cloud_positions)
         self.risk.update_positions(cloud_positions)
+        log.info(f"Inventory initialized: {self.inventory.positions}")
         log.info(f"Positions: {self.inventory.positions}")
 
         # List products
@@ -138,6 +151,7 @@ class TradingBot(BaseBot):
         except KeyboardInterrupt:
             log.info("Shutting down...")
         finally:
+            self.theo_engine.stop()
             self.executor.shutdown()
             self.stop()
 
@@ -177,6 +191,13 @@ class TradingBot(BaseBot):
 
         # 7. Run strategy-based quoting (only if not in arb cooldown)
         if time.monotonic() >= self._arb_cooldown_until:
+            # 7a. Aggressive IOC on mispriced Group A products (every 5s)
+            now = time.monotonic()
+            if now - self._last_aggressive_tick >= 5.0:
+                self._aggressive_tick(books)
+                self._last_aggressive_tick = now
+
+            # 7b. Passive strategy quoting (one symbol per tick)
             self._strategy_tick(books)
 
         # 8. Periodic PnL logging (every 30s)
@@ -201,6 +222,7 @@ class TradingBot(BaseBot):
         position = self.inventory.get_position(symbol)
         bid_price, ask_price, bid_size, ask_size = compute_desired_orders(
             symbol, self.price_tracker, position,
+            theo_engine=self.theo_engine,
         )
 
         need_bid, need_ask = self.resting_orders.needs_update(
@@ -212,6 +234,47 @@ class TradingBot(BaseBot):
                 symbol, bid_price, ask_price, bid_size, ask_size,
                 need_bid, need_ask,
             )
+
+    def _aggressive_tick(self, books: dict[str, OrderBook]) -> None:
+        """Place aggressive IOC orders on Group A products when mispriced vs theo."""
+        for symbol in GROUP_A:
+            theo = self.theo_engine.get_theo(symbol)
+            if theo is None:
+                continue
+
+            market_mid = self.price_tracker.get_mid(symbol)
+            if market_mid is None:
+                continue
+
+            position = self.inventory.get_position(symbol)
+            config = STRATEGY_CONFIGS.get(symbol)
+            if config is None:
+                continue
+
+            result = compute_aggressive_ioc(
+                symbol, market_mid, theo, position, config,
+                threshold=AGGRESSIVE_THRESHOLD,
+            )
+            if result is None:
+                continue
+
+            side_str, price, size = result
+            side = Side.BUY if side_str == "BUY" else Side.SELL
+
+            log.info(
+                f"AGGRESSIVE: {symbol} {side_str} {size}x @ {price} "
+                f"(theo={theo:.0f}, market={market_mid:.0f}, "
+                f"mispricing={(theo-market_mid)/theo*100:.2f}%)"
+            )
+
+            order = OrderRequest(symbol, price, side, size)
+            resp = self.safe_send_ioc(order)
+            if resp and resp.filled > 0:
+                self.inventory.apply_fill(symbol, side, resp.filled)
+                self.risk.update_positions(self.inventory.positions)
+                log.info(f"AGGRESSIVE FILL: {symbol} {side_str} {resp.filled}x @ {price}")
+            # Only do one aggressive IOC per tick to conserve rate limit
+            break
 
     def _reconcile_orders(
         self,
@@ -273,11 +336,13 @@ class TradingBot(BaseBot):
     # --- PnL Logging ---
 
     def _log_pnl(self) -> None:
-        """Fetch and log PnL + positions from the exchange."""
+        """Fetch and log PnL + positions + theos from the exchange."""
         try:
             pnl = self.safe_get_pnl()
             positions = self.inventory.positions
+            theos = self.theo_engine.get_all_theos()
             log.info(f"=== PnL: {pnl} | Positions: {dict(positions)} ===")
+            log.info(f"=== Theos: {theos} ===")
         except Exception as e:
             log.error(f"PnL fetch failed: {e}")
 

@@ -1,10 +1,15 @@
 """Per-market strategy configurations and order computation.
 
+Strategy uses theo-based fair values from TheoEngine when available,
+falling back to market mid-prices. Signal is computed as the deviation
+of market price from theo (mispricing signal), not EMA momentum.
+
 Strategy types:
-  - mean_reversion: Group A products, quote both sides around slow EMA
-  - etf_synthetic:  LON_ETF, quote around sum-of-component mids
-  - trend_follow:   Groups B-D, directional only on EMA crossover
-  - derivative_arb: LON_FLY, quote around computed theo from LON_ETF
+  - theo_mm:        Group A products, quote both sides around theo
+  - etf_synthetic:  LON_ETF, quote around theo (= sum of component theos)
+  - theo_accum:     Accumulator products (WX_SUM, TIDE_SWING), quote around theo
+  - derivative_arb: LON_FLY, quote around computed theo from LON_ETF distribution
+  - cautious:       LHR_INDEX, wide spread, low confidence
 """
 from config import MAX_POSITION
 from utils.helpers import snap_to_tick
@@ -12,79 +17,64 @@ from utils.helpers import snap_to_tick
 # --- Strategy configs per symbol ---
 
 STRATEGY_CONFIGS = {
-    # GROUP A: mean-reversion, quote both sides, aggressive sizing
+    # GROUP A: theo-based market making, aggressive sizing
     "TIDE_SPOT": {
-        "type": "mean_reversion",
-        "entry_threshold": 0.15,
-        "exit_threshold": 0.05,
-        "max_position": 30,
+        "type": "theo_mm",
+        "max_position": 60,
         "order_size": 5,
-        "spread_ticks": 3,
+        "spread_ticks": 2,
         "quote_both_sides": True,
     },
     "WX_SPOT": {
-        "type": "mean_reversion",
-        "entry_threshold": 0.15,
-        "exit_threshold": 0.05,
-        "max_position": 30,
+        "type": "theo_mm",
+        "max_position": 60,
+        "order_size": 5,
+        "spread_ticks": 2,
+        "quote_both_sides": True,
+    },
+    "LHR_COUNT": {
+        "type": "theo_mm",
+        "max_position": 50,
         "order_size": 5,
         "spread_ticks": 4,
         "quote_both_sides": True,
     },
-    "LHR_COUNT": {
-        "type": "mean_reversion",
-        "entry_threshold": 0.15,
-        "exit_threshold": 0.05,
-        "max_position": 25,
-        "order_size": 5,
-        "spread_ticks": 5,
-        "quote_both_sides": True,
-    },
     "LON_ETF": {
         "type": "etf_synthetic",
-        "entry_threshold": 0.10,
-        "exit_threshold": 0.05,
-        "max_position": 30,
+        "max_position": 50,
         "order_size": 5,
+        "spread_ticks": 3,
+        "quote_both_sides": True,
+    },
+    # GROUP B-C: accumulator products with theo
+    "TIDE_SWING": {
+        "type": "theo_accum",
+        "max_position": 20,
+        "order_size": 3,
         "spread_ticks": 5,
         "quote_both_sides": True,
     },
-    # GROUP B-D: trend-following, directional only, conservative
-    "TIDE_SWING": {
-        "type": "trend_follow",
-        "entry_threshold": 0.20,
-        "exit_threshold": 0.08,
-        "max_position": 15,
-        "order_size": 3,
-        "spread_ticks": 5,
-        "quote_both_sides": False,
-    },
     "WX_SUM": {
-        "type": "trend_follow",
-        "entry_threshold": 0.20,
-        "exit_threshold": 0.08,
-        "max_position": 15,
+        "type": "theo_accum",
+        "max_position": 20,
         "order_size": 3,
-        "spread_ticks": 5,
-        "quote_both_sides": False,
+        "spread_ticks": 4,
+        "quote_both_sides": True,
     },
+    # GROUP D: cautious, low confidence
     "LHR_INDEX": {
-        "type": "trend_follow",
-        "entry_threshold": 0.20,
-        "exit_threshold": 0.08,
+        "type": "cautious",
         "max_position": 15,
         "order_size": 3,
-        "spread_ticks": 5,
-        "quote_both_sides": False,
+        "spread_ticks": 6,
+        "quote_both_sides": True,
     },
-    # GROUP E: derivative, quote around LON_FLY theo
+    # GROUP E: derivative pricing from LON_ETF distribution
     "LON_FLY": {
         "type": "derivative_arb",
-        "entry_threshold": 0.25,
-        "exit_threshold": 0.10,
-        "max_position": 15,
+        "max_position": 20,
         "order_size": 3,
-        "spread_ticks": 8,
+        "spread_ticks": 5,
         "quote_both_sides": True,
     },
 }
@@ -102,7 +92,7 @@ def lon_fly_payoff(s: float) -> float:
     )
 
 
-# --- ETF synthetic mid ---
+# --- ETF synthetic mid (fallback when no theo) ---
 
 def compute_etf_synthetic_mid(price_tracker) -> float | None:
     """Sum of component mid prices for LON_ETF fair value."""
@@ -123,8 +113,8 @@ def compute_order_size(
 ) -> tuple[int, int]:
     """Returns (bid_size, ask_size) respecting position limits and signal.
 
-    Asymmetric: stronger signal → larger size in signal direction.
-    Inventory scaling: reduce size as position approaches max.
+    signal > 0 means theo > market (should buy more).
+    signal < 0 means theo < market (should sell more).
     """
     base = config["order_size"]
     max_pos = config["max_position"]
@@ -137,10 +127,12 @@ def compute_order_size(
     inv_scale = max(0.2, 1.0 - pos_ratio)
 
     if signal > 0:
+        # Theo says buy: larger bids, smaller asks
         bid_size = int(base * (1 + abs(signal)) * inv_scale)
-        ask_size = int(base * (1 - abs(signal) * 0.5) * inv_scale)
+        ask_size = int(base * max(0.2, 1 - abs(signal)) * inv_scale)
     elif signal < 0:
-        bid_size = int(base * (1 - abs(signal) * 0.5) * inv_scale)
+        # Theo says sell: smaller bids, larger asks
+        bid_size = int(base * max(0.2, 1 - abs(signal)) * inv_scale)
         ask_size = int(base * (1 + abs(signal)) * inv_scale)
     else:
         bid_size = int(base * inv_scale)
@@ -169,19 +161,19 @@ def compute_quote_prices(
 ) -> tuple[float, float]:
     """Compute bid/ask with inventory skew and signal skew.
 
-    Inventory skew: when long, lower both quotes (more aggressive sell).
-    Signal skew: shift in signal direction.
+    mid is the fair value (theo when available, market mid otherwise).
+    signal is mispricing: (theo - market_mid) / theo, clamped to [-1, 1].
     """
     half_spread = config["spread_ticks"] * tick_size / 2.0
     max_pos = config["max_position"]
 
-    # Inventory skew: push quotes away from position direction
+    # Inventory skew: push quotes to reduce position
     skew = 0.0
     if max_pos > 0:
         skew = -(position / max_pos) * half_spread * 0.5
 
-    # Signal skew
-    signal_skew = signal * half_spread * 0.3
+    # Signal skew: shift toward theo direction
+    signal_skew = signal * half_spread * 0.5
 
     bid_price = snap_to_tick(mid - half_spread + skew + signal_skew, tick_size, "down")
     ask_price = snap_to_tick(mid + half_spread + skew + signal_skew, tick_size, "up")
@@ -199,92 +191,106 @@ def compute_desired_orders(
     symbol: str,
     price_tracker,
     position: int,
+    theo_engine=None,
 ) -> tuple[float | None, float | None, int, int]:
     """Returns (bid_price, ask_price, bid_size, ask_size) or Nones if no trade.
 
-    Handles strategy type dispatch (mean_reversion, etf_synthetic,
-    trend_follow, derivative_arb).
+    Uses theo_engine for fair value when available, falls back to market mid.
+    Signal is computed as mispricing: (theo - market) / theo.
     """
     config = STRATEGY_CONFIGS.get(symbol)
     if config is None:
         return (None, None, 0, 0)
 
-    signal = price_tracker.get_signal(symbol)
     stype = config["type"]
+    market_mid = price_tracker.get_mid(symbol)
 
-    # Determine fair value (mid) based on strategy type
+    # Determine fair value based on strategy type and theo availability
+    theo = None
+    if theo_engine is not None:
+        theo = theo_engine.get_theo(symbol)
+
     if stype == "etf_synthetic":
-        mid = compute_etf_synthetic_mid(price_tracker)
+        # Prefer theo, fall back to synthetic mid from market
+        if theo is not None:
+            mid = theo
+        else:
+            mid = compute_etf_synthetic_mid(price_tracker)
     elif stype == "derivative_arb":
-        etf_mid = price_tracker.get_mid("LON_ETF")
-        if etf_mid is None:
-            etf_mid = compute_etf_synthetic_mid(price_tracker)
-        mid = lon_fly_payoff(etf_mid) if etf_mid is not None else None
+        # LON_FLY: prefer theo, fall back to payoff from market LON_ETF
+        if theo is not None:
+            mid = theo
+        else:
+            etf_mid = price_tracker.get_mid("LON_ETF")
+            if etf_mid is None:
+                etf_mid = compute_etf_synthetic_mid(price_tracker)
+            mid = lon_fly_payoff(etf_mid) if etf_mid is not None else None
+    elif stype in ("theo_mm", "theo_accum"):
+        # Prefer theo, fall back to market mid
+        if theo is not None:
+            mid = theo
+        else:
+            mid = market_mid
+    elif stype == "cautious":
+        # Low confidence: prefer market mid, use theo only for directional signal
+        mid = market_mid if market_mid is not None else theo
     else:
-        mid = price_tracker.get_mid(symbol)
+        mid = market_mid
 
     if mid is None:
         return (None, None, 0, 0)
 
-    # For trend_follow: only quote one side (directional)
-    if stype == "trend_follow":
-        if abs(signal) < config["entry_threshold"]:
-            # Signal too weak — don't trade
-            if abs(position) > 0 and abs(signal) < config["exit_threshold"]:
-                # Flatten: quote the reducing side aggressively
-                return _flatten_orders(mid, position, config)
-            return (None, None, 0, 0)
-        # Strong signal — quote only the directional side
-        return _directional_orders(mid, signal, position, config)
+    # Compute signal: mispricing relative to theo
+    if theo is not None and market_mid is not None and theo > 0:
+        signal = max(-1.0, min(1.0, (theo - market_mid) / theo * 10.0))
+    else:
+        # No theo — use zero signal (symmetric quoting)
+        signal = 0.0
 
-    # For mean_reversion / etf_synthetic / derivative_arb: quote both sides
+    # Quote both sides around fair value with signal-based skew
     bid_price, ask_price = compute_quote_prices(mid, signal, position, config)
     bid_size, ask_size = compute_order_size(signal, position, config)
-
-    if not config.get("quote_both_sides", True):
-        if signal > 0:
-            ask_price, ask_size = None, 0
-        elif signal < 0:
-            bid_price, bid_size = None, 0
 
     return (bid_price, ask_price, bid_size, ask_size)
 
 
-def _directional_orders(
-    mid: float, signal: float, position: int, config: dict,
-) -> tuple[float | None, float | None, int, int]:
-    """Directional: only place order in signal direction."""
-    half_spread = config["spread_ticks"] / 2.0
-    base_size = config["order_size"]
-    max_pos = config["max_position"]
+def compute_aggressive_ioc(
+    symbol: str,
+    market_mid: float,
+    theo: float,
+    position: int,
+    config: dict,
+    threshold: float = 0.008,
+) -> tuple[str, float, int] | None:
+    """Compute an aggressive IOC order when market deviates from theo.
 
+    Returns (side, price, size) or None if no aggressive order warranted.
+    side is "BUY" or "SELL".
+    """
+    if theo <= 0 or market_mid <= 0:
+        return None
+
+    mispricing = (theo - market_mid) / theo
+
+    if abs(mispricing) < threshold:
+        return None
+
+    max_pos = config["max_position"]
+    base_size = config["order_size"]
     buy_headroom = max(0, MAX_POSITION - position)
     sell_headroom = max(0, MAX_POSITION + position)
 
-    if signal > 0 and position < max_pos:
-        bid_price = snap_to_tick(mid - half_spread, 1.0, "down")
-        bid_size = min(base_size, buy_headroom)
-        return (bid_price, None, bid_size, 0)
-    elif signal < 0 and position > -max_pos:
-        ask_price = snap_to_tick(mid + half_spread, 1.0, "up")
-        ask_size = min(base_size, sell_headroom)
-        return (None, ask_price, 0, ask_size)
+    if mispricing > 0 and position < max_pos:
+        # Theo > market: buy aggressively (lift the ask)
+        price = snap_to_tick(market_mid + 1, 1.0, "up")
+        size = min(base_size, buy_headroom)
+        if size > 0:
+            return ("BUY", price, size)
+    elif mispricing < 0 and position > -max_pos:
+        # Theo < market: sell aggressively (hit the bid)
+        price = snap_to_tick(market_mid - 1, 1.0, "down")
+        size = min(base_size, sell_headroom)
+        if size > 0:
+            return ("SELL", price, size)
 
-    return (None, None, 0, 0)
-
-
-def _flatten_orders(
-    mid: float, position: int, config: dict,
-) -> tuple[float | None, float | None, int, int]:
-    """Place aggressive order to flatten position."""
-    if position > 0:
-        # Need to sell to flatten — aggressive ask (close to mid)
-        ask_price = snap_to_tick(mid - 1, 1.0, "down")
-        ask_size = min(abs(position), MAX_POSITION + position)
-        return (None, ask_price, 0, min(ask_size, config["order_size"]))
-    elif position < 0:
-        # Need to buy to flatten — aggressive bid (close to mid)
-        bid_price = snap_to_tick(mid + 1, 1.0, "up")
-        bid_size = min(abs(position), MAX_POSITION - position)
-        return (bid_price, None, min(bid_size, config["order_size"]), 0)
-    return (None, None, 0, 0)
+    return None
