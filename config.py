@@ -33,7 +33,7 @@ COMP_START = datetime(2026, 2, 28, 14, 30, tzinfo=timezone.utc)     # Fri Feb 28
 SETTLEMENT_TIME = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)  # Sat March 1 12:00 PM UTC
 
 # Arbitrage
-MIN_ARB_EDGE = 15.0  # minimum ticks of edge to trigger arb (was 2.0, raised to cover scratch costs)
+MIN_ARB_EDGE = 2.5
 MIN_BOOK_DEPTH = 3   # minimum contracts available on each leg to attempt arb
 
 # Scratch
@@ -41,3 +41,9 @@ MAX_SCRATCH_COST = 50.0  # skip scratch if estimated cost exceeds this
 
 # Rate limit
 MAX_REQUESTS_PER_SECOND = 1
+
+# Strategy engine
+ARB_COOLDOWN_SECONDS = 8       # pause strategies after arb IOC burst
+STRATEGY_WARMUP_TICKS = 10     # min price updates before trading
+REPRICE_THRESHOLD = 3.0        # ticks of drift before repricing GTC order
+STALE_ORDER_SECONDS = 120.0    # force-reprice after this many seconds
