@@ -1,6 +1,8 @@
 """Configuration constants."""
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # Exchange
 EXCHANGE_URL = os.getenv("CMI_URL", "http://ec2-52-49-69-152.eu-west-1.compute.amazonaws.com/")
 USERNAME = os.getenv("CMI_USER", "your_username")
