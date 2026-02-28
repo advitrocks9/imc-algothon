@@ -4,14 +4,17 @@ import time
 import logging
 
 from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Trade, Side
-from config import EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, MIN_ARB_EDGE
+from config import (
+    EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, MIN_ARB_EDGE,
+    MAX_SCRATCH_COST,
+)
 from execution.arbitrage import ArbitrageEngine
 from execution.executor import AsyncExecutor
 from execution.inventory import InventoryManager
 from execution.scratch import ScratchRoutine
 from risk.manager import RiskManager
 from utils.rate_limiter import RateLimiter
-from utils.helpers import best_bid, best_ask, mid_price, snap_to_tick
+from utils.helpers import best_bid, best_ask, best_bid_with_volume, best_ask_with_volume, mid_price, snap_to_tick
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bot")
@@ -34,12 +37,6 @@ class TradingBot(BaseBot):
         self._books: dict[str, OrderBook] = {}
         self._book_event = threading.Event()
 
-        # Theos (updated by theo engine)
-        self._theos_lock = threading.Lock()
-        self._theos: dict[str, float | None] = {s: None for s in SYMBOLS}
-
-        # Confidence intervals (half-width)
-        self._confidence: dict[str, float] = {s: 999.0 for s in SYMBOLS}
 
     # --- SSE Callbacks ---
 
@@ -52,17 +49,6 @@ class TradingBot(BaseBot):
     def on_trades(self, trade: Trade) -> None:
         side = "BOUGHT" if trade.buyer == self.username else "SOLD"
         log.info(f"FILL: {side} {trade.volume}x {trade.product} @ {trade.price}")
-
-    # --- Theo Access ---
-
-    def get_theo(self, symbol: str) -> float | None:
-        with self._theos_lock:
-            return self._theos.get(symbol)
-
-    def set_theo(self, symbol: str, value: float, confidence: float = 999.0) -> None:
-        with self._theos_lock:
-            self._theos[symbol] = value
-            self._confidence[symbol] = confidence
 
     def get_book(self, symbol: str) -> OrderBook | None:
         with self._books_lock:
@@ -174,6 +160,15 @@ class TradingBot(BaseBot):
 
         scratch_plan = self.scratch.plan_scratch(report, fresh_books)
         if scratch_plan is None:
+            return
+
+        # Skip scratch if estimated cost is too high — just sync positions instead
+        if scratch_plan.expected_cost > MAX_SCRATCH_COST:
+            log.warning(
+                f"SCRATCH SKIPPED: estimated cost={scratch_plan.expected_cost:.2f} "
+                f"exceeds cap={MAX_SCRATCH_COST}. Forcing cloud sync instead."
+            )
+            self.inventory.mark_dirty()
             return
 
         log.warning(
