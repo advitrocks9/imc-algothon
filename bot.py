@@ -5,6 +5,7 @@ import logging
 
 from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Trade, Side
 from config import EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS
+from execution.arbitrage import ArbitrageEngine
 from risk.manager import RiskManager
 from utils.rate_limiter import RateLimiter
 from utils.helpers import best_bid, best_ask, mid_price, snap_to_tick
@@ -18,6 +19,7 @@ class TradingBot(BaseBot):
         super().__init__(EXCHANGE_URL, USERNAME, PASSWORD)
         self.risk = RiskManager()
         self.limiter = RateLimiter(max_rps=1.0)
+        self.arb_engine = ArbitrageEngine(min_edge=2.0)
 
         # Latest order book snapshots (updated by SSE)
         self._books_lock = threading.Lock()
@@ -116,8 +118,22 @@ class TradingBot(BaseBot):
             self.stop()
 
     def _main_tick(self, products: dict) -> None:
-        """One iteration of the main trading loop. Filled in by later phases."""
-        # Phase 0: just sync positions and sleep
+        """One iteration of the main trading loop."""
+        # 1. Read cached SSE books (no REST call)
+        with self._books_lock:
+            books = dict(self._books)
+
+        # 2. Check ETF arbitrage
+        arb_orders = self.arb_engine.check_and_generate_orders(
+            books, self.risk.positions, max_volume=5
+        )
+        if arb_orders:
+            for order in arb_orders:
+                resp = self.safe_send_ioc(order)
+                if resp:
+                    log.info(f"ARB executed: {order.product} {order.side} {resp.filled} filled @ {order.price}")
+
+        # 3. Sync positions
         self.risk.update_positions(self.safe_get_positions())
-        log.info(f"Positions: {self.risk.positions}")
-        time.sleep(10)
+
+        time.sleep(2)
