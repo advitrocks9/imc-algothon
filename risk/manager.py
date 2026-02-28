@@ -1,6 +1,7 @@
 """Position and risk management."""
 import threading
 
+from bot_template import Side
 from config import MAX_POSITION
 
 
@@ -35,6 +36,17 @@ class RiskManager:
 
     def max_sell_volume(self, symbol: str) -> int:
         return max(0, MAX_POSITION + self.get_position(symbol))
+
+    def apply_fill(self, product: str, side: Side, filled_volume: int) -> None:
+        """Incrementally update position for a single fill."""
+        if filled_volume <= 0:
+            return
+        with self._lock:
+            current = self._positions.get(product, 0)
+            if side == Side.BUY:
+                self._positions[product] = current + filled_volume
+            else:
+                self._positions[product] = current - filled_volume
 
     def update_pnl(self, pnl: dict) -> None:
         with self._lock:

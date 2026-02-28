@@ -2,12 +2,17 @@
 
 Monitors LON_ETF vs (TIDE_SPOT + WX_SPOT + LHR_COUNT).
 When a mispricing exceeds the threshold, executes the 4-leg arb.
+
+Volume is clamped to the "weakest link" — the minimum of:
+  - base target quantity
+  - position limit headroom on all 4 legs
+  - available book depth at the targeted price for all 4 legs
 """
 import logging
 
 from bot_template import OrderBook, OrderRequest, Side
 from config import MAX_POSITION
-from utils.helpers import best_bid, best_ask
+from utils.helpers import best_bid_with_volume, best_ask_with_volume
 
 log = logging.getLogger("arb")
 
@@ -20,8 +25,7 @@ class ArbitrageEngine:
         """
         Args:
             min_edge: Minimum price discrepancy to trigger arb.
-                      Must exceed expected slippage + tick costs.
-                      Start conservatively at 2-3 ticks.
+                      Must exceed expected slippage + scratch costs.
         """
         self.min_edge = min_edge
 
@@ -33,8 +37,8 @@ class ArbitrageEngine:
     ) -> list[OrderRequest]:
         """Check for arb opportunity and return orders to execute.
 
-        Returns empty list if no opportunity or if position limits
-        would be breached.
+        Returns empty list if no opportunity, position limits breached,
+        or any book leg has zero available volume.
         """
         etf_book = books.get(ETF_SYMBOL)
         component_books = {s: books.get(s) for s in COMPONENT_SYMBOLS}
@@ -42,35 +46,67 @@ class ArbitrageEngine:
         if etf_book is None or any(b is None for b in component_books.values()):
             return []
 
-        # Get tradeable prices (excluding own orders)
-        etf_bid = best_bid(etf_book)
-        etf_ask = best_ask(etf_book)
-        comp_bids = {s: best_bid(b) for s, b in component_books.items()}
-        comp_asks = {s: best_ask(b) for s, b in component_books.items()}
+        # Get tradeable prices AND available volumes (excluding own orders)
+        etf_bid_info = best_bid_with_volume(etf_book)
+        etf_ask_info = best_ask_with_volume(etf_book)
+        comp_bid_infos = {s: best_bid_with_volume(b) for s, b in component_books.items()}
+        comp_ask_infos = {s: best_ask_with_volume(b) for s, b in component_books.items()}
 
-        if etf_bid is None or etf_ask is None:
+        if etf_bid_info is None or etf_ask_info is None:
             return []
-        if any(v is None for v in comp_bids.values()) or any(v is None for v in comp_asks.values()):
+        if any(v is None for v in comp_bid_infos.values()):
+            return []
+        if any(v is None for v in comp_ask_infos.values()):
             return []
 
-        # Case 1: ETF overpriced -> sell ETF, buy components
+        # Unpack prices and volumes
+        etf_bid, etf_bid_vol = etf_bid_info
+        etf_ask, etf_ask_vol = etf_ask_info
+        comp_asks = {s: info[0] for s, info in comp_ask_infos.items()}
+        comp_ask_vols = {s: info[1] for s, info in comp_ask_infos.items()}
+        comp_bids = {s: info[0] for s, info in comp_bid_infos.items()}
+        comp_bid_vols = {s: info[1] for s, info in comp_bid_infos.items()}
+
+        # Case 1: ETF overpriced -> sell ETF (hit bid), buy components (lift asks)
         comp_ask_sum = sum(comp_asks.values())
         edge_sell_etf = etf_bid - comp_ask_sum
         if edge_sell_etf >= self.min_edge:
-            log.info(f"ARB: Sell ETF @ {etf_bid}, Buy components @ {comp_ask_sum}, edge={edge_sell_etf:.1f}")
-            vol = self._safe_volume(max_volume, ETF_SYMBOL, Side.SELL, COMPONENT_SYMBOLS, Side.BUY, positions)
+            book_vols = {ETF_SYMBOL: etf_bid_vol}
+            book_vols.update(comp_ask_vols)
+
+            vol, bottleneck = self._safe_volume(
+                max_volume, ETF_SYMBOL, Side.SELL,
+                COMPONENT_SYMBOLS, Side.BUY, positions, book_vols,
+            )
+            log.info(
+                f"ARB: Sell ETF @ {etf_bid}, Buy components @ {comp_ask_sum}, "
+                f"edge={edge_sell_etf:.1f}, clamped_vol={vol}, "
+                f"bottleneck={bottleneck}, "
+                f"book_depths={book_vols}"
+            )
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_bid, Side.SELL, vol)]
                 for s in COMPONENT_SYMBOLS:
                     orders.append(OrderRequest(s, comp_asks[s], Side.BUY, vol))
                 return orders
 
-        # Case 2: ETF underpriced -> buy ETF, sell components
+        # Case 2: ETF underpriced -> buy ETF (lift ask), sell components (hit bids)
         comp_bid_sum = sum(comp_bids.values())
         edge_buy_etf = comp_bid_sum - etf_ask
         if edge_buy_etf >= self.min_edge:
-            log.info(f"ARB: Buy ETF @ {etf_ask}, Sell components @ {comp_bid_sum}, edge={edge_buy_etf:.1f}")
-            vol = self._safe_volume(max_volume, ETF_SYMBOL, Side.BUY, COMPONENT_SYMBOLS, Side.SELL, positions)
+            book_vols = {ETF_SYMBOL: etf_ask_vol}
+            book_vols.update(comp_bid_vols)
+
+            vol, bottleneck = self._safe_volume(
+                max_volume, ETF_SYMBOL, Side.BUY,
+                COMPONENT_SYMBOLS, Side.SELL, positions, book_vols,
+            )
+            log.info(
+                f"ARB: Buy ETF @ {etf_ask}, Sell components @ {comp_bid_sum}, "
+                f"edge={edge_buy_etf:.1f}, clamped_vol={vol}, "
+                f"bottleneck={bottleneck}, "
+                f"book_depths={book_vols}"
+            )
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_ask, Side.BUY, vol)]
                 for s in COMPONENT_SYMBOLS:
@@ -87,20 +123,41 @@ class ArbitrageEngine:
         comp_symbols: list[str],
         comp_side: Side,
         positions: dict[str, int],
-    ) -> int:
-        """Compute max volume respecting +/-100 position limits on all legs."""
+        book_volumes: dict[str, int],
+    ) -> tuple[int, str | None]:
+        """Compute max volume respecting position limits AND book depth.
+
+        Returns (clamped_volume, bottleneck_symbol). bottleneck_symbol is
+        the product that caused the tightest constraint, or None if the
+        base desired volume was the binding constraint.
+        """
         vol = desired
-        # Check ETF leg
+        bottleneck: str | None = None
+
+        # --- Position limit clamp ---
         etf_pos = positions.get(etf_symbol, 0)
         if etf_side == Side.BUY:
-            vol = min(vol, MAX_POSITION - etf_pos)
+            limit = MAX_POSITION - etf_pos
         else:
-            vol = min(vol, MAX_POSITION + etf_pos)
-        # Check component legs
+            limit = MAX_POSITION + etf_pos
+        if limit < vol:
+            vol = limit
+            bottleneck = f"{etf_symbol}(pos)"
+
         for s in comp_symbols:
             pos = positions.get(s, 0)
             if comp_side == Side.BUY:
-                vol = min(vol, MAX_POSITION - pos)
+                limit = MAX_POSITION - pos
             else:
-                vol = min(vol, MAX_POSITION + pos)
-        return max(0, vol)
+                limit = MAX_POSITION + pos
+            if limit < vol:
+                vol = limit
+                bottleneck = f"{s}(pos)"
+
+        # --- Book depth clamp (the "weakest link") ---
+        for symbol, available in book_volumes.items():
+            if available < vol:
+                vol = available
+                bottleneck = f"{symbol}(book)"
+
+        return (max(0, vol), bottleneck)
