@@ -11,7 +11,7 @@ Volume is clamped to the "weakest link" — the minimum of:
 import logging
 
 from bot_template import OrderBook, OrderRequest, Side
-from config import MAX_POSITION
+from config import MAX_POSITION, MIN_BOOK_DEPTH
 from utils.helpers import best_bid_with_volume, best_ask_with_volume
 
 log = logging.getLogger("arb")
@@ -74,6 +74,12 @@ class ArbitrageEngine:
             book_vols = {ETF_SYMBOL: etf_bid_vol}
             book_vols.update(comp_ask_vols)
 
+            # Skip if any leg has insufficient book depth
+            if any(v < MIN_BOOK_DEPTH for v in book_vols.values()):
+                thin = {s: v for s, v in book_vols.items() if v < MIN_BOOK_DEPTH}
+                log.debug(f"ARB: skipping sell-ETF — thin books: {thin}")
+                return []
+
             vol, bottleneck = self._safe_volume(
                 max_volume, ETF_SYMBOL, Side.SELL,
                 COMPONENT_SYMBOLS, Side.BUY, positions, book_vols,
@@ -96,6 +102,12 @@ class ArbitrageEngine:
         if edge_buy_etf >= self.min_edge:
             book_vols = {ETF_SYMBOL: etf_ask_vol}
             book_vols.update(comp_bid_vols)
+
+            # Skip if any leg has insufficient book depth
+            if any(v < MIN_BOOK_DEPTH for v in book_vols.values()):
+                thin = {s: v for s, v in book_vols.items() if v < MIN_BOOK_DEPTH}
+                log.debug(f"ARB: skipping buy-ETF — thin books: {thin}")
+                return []
 
             vol, bottleneck = self._safe_volume(
                 max_volume, ETF_SYMBOL, Side.BUY,
