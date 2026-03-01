@@ -43,10 +43,10 @@ MAX_SCRATCH_COST = 50.0  # skip scratch if estimated cost exceeds this
 MAX_REQUESTS_PER_SECOND = 1
 
 # Strategy engine
-ARB_COOLDOWN_SECONDS = 8       # pause strategies after arb IOC burst
+ARB_COOLDOWN_SECONDS = 3       # pause strategies after arb IOC burst
 STRATEGY_WARMUP_TICKS = 10     # min price updates before trading
-REPRICE_THRESHOLD = 3.0        # ticks of drift before repricing GTC order
-STALE_ORDER_SECONDS = 120.0    # force-reprice after this many seconds
+REPRICE_THRESHOLD = 1.5        # ticks of drift before repricing GTC order
+STALE_ORDER_SECONDS = 60.0     # force-reprice after this many seconds
 
 # Theo-based aggressive trading
 AGGRESSIVE_THRESHOLD = 0.008   # 0.8% deviation from theo triggers aggressive IOC
