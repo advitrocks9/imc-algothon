@@ -55,6 +55,7 @@ class TradingBot(BaseBot):
         self._arb_cooldown_until = 0.0
         self._last_pnl_log = 0.0
         self._last_aggressive_tick = 0.0
+        self._aggressive_start_idx = 0  # round-robin for aggressive IOC
 
         # Theo engine — computes fair values from external data
         self.theo_engine = TheoEngine()
@@ -74,8 +75,12 @@ class TradingBot(BaseBot):
         self._book_event.set()
 
     def on_trades(self, trade: Trade) -> None:
-        side = "BOUGHT" if trade.buyer == self.username else "SOLD"
-        log.info(f"FILL: {side} {trade.volume}x {trade.product} @ {trade.price}")
+        if trade.buyer == self.username:
+            log.info(f"OWN FILL: BOUGHT {trade.volume}x {trade.product} @ {trade.price}")
+            self.inventory.mark_dirty()
+        elif trade.seller == self.username:
+            log.info(f"OWN FILL: SOLD {trade.volume}x {trade.product} @ {trade.price}")
+            self.inventory.mark_dirty()
 
     def get_book(self, symbol: str) -> OrderBook | None:
         with self._books_lock:
@@ -237,7 +242,9 @@ class TradingBot(BaseBot):
 
     def _aggressive_tick(self, books: dict[str, OrderBook]) -> None:
         """Place aggressive IOC orders on Group A products when mispriced vs theo."""
-        for symbol in GROUP_A:
+        n = len(GROUP_A)
+        for i in range(n):
+            symbol = GROUP_A[(self._aggressive_start_idx + i) % n]
             theo = self.theo_engine.get_theo(symbol)
             if theo is None:
                 continue
@@ -273,8 +280,7 @@ class TradingBot(BaseBot):
                 self.inventory.apply_fill(symbol, side, resp.filled)
                 self.risk.update_positions(self.inventory.positions)
                 log.info(f"AGGRESSIVE FILL: {symbol} {side_str} {resp.filled}x @ {price}")
-            # Only do one aggressive IOC per tick to conserve rate limit
-            break
+        self._aggressive_start_idx = (self._aggressive_start_idx + 1) % n
 
     def _reconcile_orders(
         self,

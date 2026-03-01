@@ -122,21 +122,28 @@ def compute_order_size(
     buy_headroom = max(0, MAX_POSITION - current_position)
     sell_headroom = max(0, MAX_POSITION + current_position)
 
-    # Scale down as position approaches strategy max
+    # Scale down building direction as position approaches strategy max,
+    # but keep unwinding direction at full size to flatten faster
     pos_ratio = abs(current_position) / max_pos if max_pos > 0 else 1.0
-    inv_scale = max(0.2, 1.0 - pos_ratio)
+    build_scale = max(0.2, 1.0 - pos_ratio)
 
     if signal > 0:
         # Theo says buy: larger bids, smaller asks
-        bid_size = int(base * (1 + abs(signal)) * inv_scale)
-        ask_size = int(base * max(0.2, 1 - abs(signal)) * inv_scale)
+        bid_scale = build_scale if current_position >= 0 else 1.0
+        ask_scale = 1.0 if current_position > 0 else build_scale
+        bid_size = int(base * (1 + abs(signal)) * bid_scale)
+        ask_size = int(base * max(0.2, 1 - abs(signal)) * ask_scale)
     elif signal < 0:
         # Theo says sell: smaller bids, larger asks
-        bid_size = int(base * max(0.2, 1 - abs(signal)) * inv_scale)
-        ask_size = int(base * (1 + abs(signal)) * inv_scale)
+        bid_scale = 1.0 if current_position < 0 else build_scale
+        ask_scale = build_scale if current_position <= 0 else 1.0
+        bid_size = int(base * max(0.2, 1 - abs(signal)) * bid_scale)
+        ask_size = int(base * (1 + abs(signal)) * ask_scale)
     else:
-        bid_size = int(base * inv_scale)
-        ask_size = int(base * inv_scale)
+        bid_scale = 1.0 if current_position < 0 else build_scale
+        ask_scale = 1.0 if current_position > 0 else build_scale
+        bid_size = int(base * bid_scale)
+        ask_size = int(base * ask_scale)
 
     bid_size = min(max(1, bid_size), buy_headroom)
     ask_size = min(max(1, ask_size), sell_headroom)
@@ -173,7 +180,7 @@ def compute_quote_prices(
         skew = -(position / max_pos) * half_spread * 0.5
 
     # Signal skew: shift toward theo direction
-    signal_skew = signal * half_spread * 0.5
+    signal_skew = signal * half_spread * 3.0
 
     bid_price = snap_to_tick(mid - half_spread + skew + signal_skew, tick_size, "down")
     ask_price = snap_to_tick(mid + half_spread + skew + signal_skew, tick_size, "up")
@@ -242,7 +249,7 @@ def compute_desired_orders(
 
     # Compute signal: mispricing relative to theo
     if theo is not None and market_mid is not None and theo > 0:
-        signal = max(-1.0, min(1.0, (theo - market_mid) / theo * 10.0))
+        signal = max(-1.0, min(1.0, (theo - market_mid) / theo))
     else:
         # No theo — use zero signal (symmetric quoting)
         signal = 0.0
