@@ -31,23 +31,25 @@ COMPETITION_DURATION_HOURS = 24
 SETTLEMENT_HOUR = 12  # noon London time
 COMP_START = datetime(2026, 2, 28, 14, 30, tzinfo=timezone.utc)     # Fri Feb 28 2:30 PM UTC
 SETTLEMENT_TIME = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)  # Sat March 1 12:00 PM UTC
+# Settlement counts flights over 24h ending at SETTLEMENT_TIME (not from COMP_START)
+SETTLEMENT_WINDOW_START = datetime(2026, 2, 28, 12, 0, tzinfo=timezone.utc)  # 24h before settlement
 
 # Arbitrage
-MIN_ARB_EDGE = 1.5   # tightened from 2.5 to capture more arb
-MIN_BOOK_DEPTH = 3   # minimum contracts available on each leg to attempt arb
+MIN_ARB_EDGE = 4.0   # reduced to capture tighter arb opportunities
+MIN_BOOK_DEPTH = 2   # reduced to trade in thinner books
 
 # Scratch
-MAX_SCRATCH_COST = 50.0  # skip scratch if estimated cost exceeds this
+MAX_SCRATCH_COST = 500.0  # skip scratch if estimated cost exceeds this (high to avoid unhedged risk)
 
 # Rate limit
-MAX_REQUESTS_PER_SECOND = 1
+MAX_REQUESTS_PER_SECOND = 16
 
 # Strategy engine
-ARB_COOLDOWN_SECONDS = 3       # pause strategies after arb IOC burst
-STRATEGY_WARMUP_TICKS = 10     # min price updates before trading
-REPRICE_THRESHOLD = 1.5        # ticks of drift before repricing GTC order
+ARB_COOLDOWN_SECONDS = 0.5     # brief pause after arb IOC burst (plenty of rate budget)
+STRATEGY_WARMUP_TICKS = 3      # min price updates before trading (faster start)
+REPRICE_THRESHOLD = 2.5        # ticks of drift before repricing GTC order (wider to reduce cancel churn)
 STALE_ORDER_SECONDS = 60.0     # force-reprice after this many seconds
 
 # Theo-based aggressive trading
-AGGRESSIVE_THRESHOLD = 0.008   # 0.8% deviation from theo triggers aggressive IOC
+AGGRESSIVE_THRESHOLD = 0.02    # 2% deviation from theo triggers aggressive IOC
 AGGRESSIVE_ORDER_SIZE = 5      # contracts per aggressive IOC order

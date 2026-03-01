@@ -16,3 +16,9 @@ env/
 .DS_Store
 .DS_Store?
 ._*
+
+# Logs
+*.log
+
+# Cache
+*.json

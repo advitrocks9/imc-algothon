@@ -15,14 +15,14 @@ import pandas as pd
 from data.thames import fetch_thames_readings, TidalModel
 from data.weather import fetch_weather
 from data.flights import (
-    fetch_heathrow_flights, estimate_total_lhr_count,
+    fetch_aerodatabox_flights, estimate_total_lhr_count,
     bin_flights_30min, compute_lhr_index,
 )
-from config import COMP_START, SETTLEMENT_TIME
+from config import COMP_START, SETTLEMENT_TIME, SETTLEMENT_WINDOW_START, AERODATABOX_KEY
 
 log = logging.getLogger("theo.engine")
 
-THEO_POLL_INTERVAL = 120  # seconds between API refreshes
+THEO_POLL_INTERVAL = 60  # seconds between API refreshes
 
 
 def lon_fly_payoff(s: float) -> float:
@@ -119,14 +119,31 @@ class TheoEngine:
 
     def _fetch_flights(self) -> None:
         try:
-            now = datetime.now(timezone.utc)
-            self._flight_data = fetch_heathrow_flights(COMP_START, now)
-            dep_count = self._flight_data.get("dep_count", 0)
-            arr_count = self._flight_data.get("arr_count", 0)
-            log.info(
-                f"Heathrow flights: {dep_count} deps + {arr_count} arrs "
-                f"= {dep_count + arr_count} total"
+            new_data = fetch_aerodatabox_flights(
+                AERODATABOX_KEY, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME,
             )
+            dep_count = new_data.get("dep_count", 0)
+            arr_count = new_data.get("arr_count", 0)
+            total = dep_count + arr_count
+
+            if total > 0:
+                # Good data — update
+                self._flight_data = new_data
+                log.info(
+                    f"AeroDataBox flights: {dep_count} deps + {arr_count} arrs "
+                    f"= {total} total"
+                )
+            elif self._flight_data is not None:
+                # API returned 0 flights (likely 429 fallback) — keep old data
+                old_total = self._flight_data.get("dep_count", 0) + self._flight_data.get("arr_count", 0)
+                log.warning(
+                    f"AeroDataBox returned 0 flights (API error?), "
+                    f"keeping previous data ({old_total} flights)"
+                )
+            else:
+                # No previous data either — use the fallback
+                self._flight_data = new_data
+                log.warning("AeroDataBox returned 0 flights and no previous data available")
         except Exception as e:
             log.error(f"Flight data fetch failed: {e}")
 
@@ -194,7 +211,7 @@ class TheoEngine:
         now = datetime.now(timezone.utc)
         if self._flight_data is not None:
             theo, conf = estimate_total_lhr_count(
-                self._flight_data, COMP_START, SETTLEMENT_TIME, now,
+                self._flight_data, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME, now,
             )
             self._set_theo("LHR_COUNT", theo, conf)
         else:
@@ -294,7 +311,7 @@ class TheoEngine:
         now = datetime.now(timezone.utc)
         if self._flight_data is not None:
             intervals = bin_flights_30min(
-                self._flight_data, COMP_START, SETTLEMENT_TIME, now,
+                self._flight_data, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME, now,
             )
             theo, conf = compute_lhr_index(intervals)
             self._set_theo("LHR_INDEX", theo, conf)
