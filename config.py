@@ -35,7 +35,7 @@ SETTLEMENT_TIME = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)  # Sat March 
 SETTLEMENT_WINDOW_START = datetime(2026, 2, 28, 12, 0, tzinfo=timezone.utc)  # 24h before settlement
 
 # Arbitrage
-MIN_ARB_EDGE = 4.0   # reduced to capture tighter arb opportunities
+MIN_ARB_EDGE = 1.5   # tight to capture more arb opportunities
 MIN_BOOK_DEPTH = 2   # reduced to trade in thinner books
 
 # Scratch
@@ -51,5 +51,9 @@ REPRICE_THRESHOLD = 2.5        # ticks of drift before repricing GTC order (wide
 STALE_ORDER_SECONDS = 60.0     # force-reprice after this many seconds
 
 # Theo-based aggressive trading
-AGGRESSIVE_THRESHOLD = 0.02    # 2% deviation from theo triggers aggressive IOC
+AGGRESSIVE_THRESHOLD = 0.008   # 0.8% deviation from theo triggers aggressive IOC
 AGGRESSIVE_ORDER_SIZE = 5      # contracts per aggressive IOC order
+
+# Stop-loss
+STOP_LOSS_PNL = 250_000.0     # halt trading if PnL drops below this
+STOP_LOSS_CHECK_INTERVAL = 30  # seconds between PnL checks for stop-loss

@@ -12,6 +12,7 @@ from config import (
     MAX_SCRATCH_COST, ARB_COOLDOWN_SECONDS, STRATEGY_WARMUP_TICKS,
     REPRICE_THRESHOLD, STALE_ORDER_SECONDS, AGGRESSIVE_THRESHOLD,
     AGGRESSIVE_ORDER_SIZE, MAX_POSITION,
+    STOP_LOSS_PNL, STOP_LOSS_CHECK_INTERVAL,
 )
 from data.price_tracker import PriceTracker
 from execution.arbitrage import ArbitrageEngine
@@ -80,6 +81,11 @@ class TradingBot(BaseBot):
 
         # Emergency unwind tracking
         self._last_emergency_unwind = 0.0
+
+        # Stop-loss
+        self._stop_loss_triggered = False
+        self._last_pnl_check = 0.0
+        self._last_known_pnl: float | None = None
 
 
     # --- SSE Callbacks ---
@@ -189,6 +195,26 @@ class TradingBot(BaseBot):
 
     def _main_tick(self, products: dict) -> None:
         """One iteration of the main trading loop."""
+        # 0. Stop-loss check: halt all trading if PnL drops below threshold
+        if self._stop_loss_triggered:
+            return
+        now_sl = time.monotonic()
+        if now_sl - self._last_pnl_check >= STOP_LOSS_CHECK_INTERVAL:
+            self._last_pnl_check = now_sl
+            try:
+                pnl_data = self.safe_get_pnl()
+                if pnl_data and "totalProfit" in pnl_data:
+                    self._last_known_pnl = pnl_data["totalProfit"]
+                    if self._last_known_pnl < STOP_LOSS_PNL:
+                        log.critical(
+                            f"STOP-LOSS TRIGGERED: PnL={self._last_known_pnl:.0f} "
+                            f"< threshold={STOP_LOSS_PNL:.0f}. Halting all trading."
+                        )
+                        self._stop_loss_triggered = True
+                        return
+            except Exception as e:
+                log.error(f"Stop-loss PnL check failed: {e}")
+
         # 1. Read cached SSE books (no REST call)
         with self._books_lock:
             books = dict(self._books)
@@ -465,6 +491,9 @@ class TradingBot(BaseBot):
         """Fetch and log PnL + positions + theos from the exchange."""
         try:
             pnl = self.safe_get_pnl()
+            if pnl and "totalProfit" in pnl:
+                self._last_known_pnl = pnl["totalProfit"]
+                self._last_pnl_check = time.monotonic()
             positions = self.inventory.positions
             theos = self.theo_engine.get_all_theos()
             log.info(f"=== PnL: {pnl} | Positions: {dict(positions)} ===")
