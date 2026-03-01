@@ -14,7 +14,11 @@ import pandas as pd
 
 from data.thames import fetch_thames_readings, TidalModel
 from data.weather import fetch_weather
-from config import COMP_START, SETTLEMENT_TIME, AERODATABOX_KEY
+from data.flights import (
+    fetch_heathrow_flights, estimate_total_lhr_count,
+    bin_flights_30min, compute_lhr_index,
+)
+from config import COMP_START, SETTLEMENT_TIME
 
 log = logging.getLogger("theo.engine")
 
@@ -46,7 +50,9 @@ class TheoEngine:
 
         self._tidal_model = TidalModel()
         self._weather_df: pd.DataFrame | None = None
-        self._total_scheduled_flights = 700  # default Sunday Heathrow estimate
+
+        # Flight data from OpenSky + FR24
+        self._flight_data: dict | None = None
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -92,6 +98,7 @@ class TheoEngine:
     def _fetch_and_compute(self) -> None:
         self._fetch_thames()
         self._fetch_weather()
+        self._fetch_flights()
         self._compute_all_theos()
 
     # --- Data fetching ---
@@ -109,6 +116,19 @@ class TheoEngine:
             self._weather_df = fetch_weather(past_steps=96, forecast_steps=96)
         except Exception as e:
             log.error(f"Weather fetch failed: {e}")
+
+    def _fetch_flights(self) -> None:
+        try:
+            now = datetime.now(timezone.utc)
+            self._flight_data = fetch_heathrow_flights(COMP_START, now)
+            dep_count = self._flight_data.get("dep_count", 0)
+            arr_count = self._flight_data.get("arr_count", 0)
+            log.info(
+                f"Heathrow flights: {dep_count} deps + {arr_count} arrs "
+                f"= {dep_count + arr_count} total"
+            )
+        except Exception as e:
+            log.error(f"Flight data fetch failed: {e}")
 
     # --- Theo computations ---
 
@@ -171,12 +191,15 @@ class TheoEngine:
         self._set_theo("WX_SPOT", theo, conf)
 
     def _compute_lhr_count(self, hours_elapsed: float, total_hours: float) -> None:
-        # Without real flight data, use default estimate
-        theo = self._total_scheduled_flights
-        # Confidence shrinks as time passes (less remaining uncertainty)
-        frac_elapsed = min(hours_elapsed / total_hours, 1.0) if total_hours > 0 else 0.0
-        conf = (1.0 - frac_elapsed) * 50.0 + 10.0
-        self._set_theo("LHR_COUNT", theo, conf)
+        now = datetime.now(timezone.utc)
+        if self._flight_data is not None:
+            theo, conf = estimate_total_lhr_count(
+                self._flight_data, COMP_START, SETTLEMENT_TIME, now,
+            )
+            self._set_theo("LHR_COUNT", theo, conf)
+        else:
+            # No flight data yet — use conservative fallback
+            self._set_theo("LHR_COUNT", 1300, 200.0)
 
     def _compute_lon_etf(self) -> None:
         tide = self.get_theo("TIDE_SPOT")
@@ -268,6 +291,12 @@ class TheoEngine:
         self._set_theo("TIDE_SWING", round(total_payoff), max(conf, 50.0))
 
     def _compute_lhr_index(self) -> None:
-        # Low confidence — hard to predict without real flight data
-        # Use market mid as fallback; set a wide confidence
-        self._set_theo("LHR_INDEX", 100, 200.0)
+        now = datetime.now(timezone.utc)
+        if self._flight_data is not None:
+            intervals = bin_flights_30min(
+                self._flight_data, COMP_START, SETTLEMENT_TIME, now,
+            )
+            theo, conf = compute_lhr_index(intervals)
+            self._set_theo("LHR_INDEX", theo, conf)
+        else:
+            self._set_theo("LHR_INDEX", 100, 200.0)
