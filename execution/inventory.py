@@ -13,7 +13,7 @@ from bot_template import Side
 
 log = logging.getLogger("inventory")
 
-CLOUD_SYNC_INTERVAL = 60.0  # seconds between cloud reconciliations
+CLOUD_SYNC_INTERVAL = 120.0  # seconds between cloud reconciliations (SSE fills are reliable)
 
 
 class InventoryManager:

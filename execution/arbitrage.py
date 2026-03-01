@@ -9,6 +9,7 @@ Volume is clamped to the "weakest link" — the minimum of:
   - available book depth at the targeted price for all 4 legs
 """
 import logging
+import time
 
 from bot_template import OrderBook, OrderRequest, Side
 from config import MAX_POSITION, MIN_BOOK_DEPTH
@@ -28,6 +29,7 @@ class ArbitrageEngine:
                       Must exceed expected slippage + scratch costs.
         """
         self.min_edge = min_edge
+        self._last_blocked_log: float = 0.0
 
     def check_and_generate_orders(
         self,
@@ -45,6 +47,23 @@ class ArbitrageEngine:
 
         if etf_book is None or any(b is None for b in component_books.values()):
             return []
+
+        # Position-aware gating: skip arb if any leg is near position limit
+        # on the side that would increase exposure (>70% of MAX_POSITION)
+        pos_limit_70 = int(MAX_POSITION * 0.7)
+        etf_pos = positions.get(ETF_SYMBOL, 0)
+        for s in COMPONENT_SYMBOLS:
+            comp_pos = positions.get(s, 0)
+            # If we'd sell ETF + buy components, check component buy headroom & ETF sell headroom
+            # If we'd buy ETF + sell components, check component sell headroom & ETF buy headroom
+            if abs(comp_pos) >= pos_limit_70 or abs(etf_pos) >= pos_limit_70:
+                if time.monotonic() - self._last_blocked_log > 30:
+                    log.info(
+                        f"ARB GATED: position too large — "
+                        f"ETF={etf_pos}, {s}={comp_pos} (limit={pos_limit_70})"
+                    )
+                    self._last_blocked_log = time.monotonic()
+                return []
 
         # Get tradeable prices AND available volumes (excluding own orders)
         etf_bid_info = best_bid_with_volume(etf_book)
@@ -84,12 +103,19 @@ class ArbitrageEngine:
                 max_volume, ETF_SYMBOL, Side.SELL,
                 COMPONENT_SYMBOLS, Side.BUY, positions, book_vols,
             )
-            log.info(
-                f"ARB: Sell ETF @ {etf_bid}, Buy components @ {comp_ask_sum}, "
-                f"edge={edge_sell_etf:.1f}, clamped_vol={vol}, "
-                f"bottleneck={bottleneck}, "
-                f"book_depths={book_vols}"
-            )
+            if vol > 0:
+                log.info(
+                    f"ARB: Sell ETF @ {etf_bid}, Buy components @ {comp_ask_sum}, "
+                    f"edge={edge_sell_etf:.1f}, clamped_vol={vol}, "
+                    f"bottleneck={bottleneck}, "
+                    f"book_depths={book_vols}"
+                )
+            elif time.monotonic() - self._last_blocked_log > 30:
+                log.info(
+                    f"ARB BLOCKED: Sell ETF edge={edge_sell_etf:.1f}, "
+                    f"bottleneck={bottleneck}"
+                )
+                self._last_blocked_log = time.monotonic()
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_bid, Side.SELL, vol)]
                 for s in COMPONENT_SYMBOLS:
@@ -113,12 +139,19 @@ class ArbitrageEngine:
                 max_volume, ETF_SYMBOL, Side.BUY,
                 COMPONENT_SYMBOLS, Side.SELL, positions, book_vols,
             )
-            log.info(
-                f"ARB: Buy ETF @ {etf_ask}, Sell components @ {comp_bid_sum}, "
-                f"edge={edge_buy_etf:.1f}, clamped_vol={vol}, "
-                f"bottleneck={bottleneck}, "
-                f"book_depths={book_vols}"
-            )
+            if vol > 0:
+                log.info(
+                    f"ARB: Buy ETF @ {etf_ask}, Sell components @ {comp_bid_sum}, "
+                    f"edge={edge_buy_etf:.1f}, clamped_vol={vol}, "
+                    f"bottleneck={bottleneck}, "
+                    f"book_depths={book_vols}"
+                )
+            elif time.monotonic() - self._last_blocked_log > 30:
+                log.info(
+                    f"ARB BLOCKED: Buy ETF edge={edge_buy_etf:.1f}, "
+                    f"bottleneck={bottleneck}"
+                )
+                self._last_blocked_log = time.monotonic()
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_ask, Side.BUY, vol)]
                 for s in COMPONENT_SYMBOLS:

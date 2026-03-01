@@ -20,30 +20,31 @@ STRATEGY_CONFIGS = {
     # GROUP A: theo-based market making, aggressive sizing
     "TIDE_SPOT": {
         "type": "theo_mm",
-        "max_position": 60,
-        "order_size": 5,
-        "spread_ticks": 2,
+        "max_position": 30,
+        "order_size": 3,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
     "WX_SPOT": {
         "type": "theo_mm",
-        "max_position": 60,
-        "order_size": 5,
-        "spread_ticks": 2,
+        "max_position": 30,
+        "order_size": 3,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
     "LHR_COUNT": {
         "type": "theo_mm",
-        "max_position": 50,
-        "order_size": 5,
+        "max_position": 30,
+        "order_size": 3,
         "spread_ticks": 4,
         "quote_both_sides": True,
+        "theo_fade_factor": 0.5,
     },
     "LON_ETF": {
         "type": "etf_synthetic",
-        "max_position": 50,
-        "order_size": 5,
-        "spread_ticks": 3,
+        "max_position": 30,
+        "order_size": 3,
+        "spread_ticks": 4,
         "quote_both_sides": True,
     },
     # GROUP B-C: accumulator products with theo
@@ -51,22 +52,22 @@ STRATEGY_CONFIGS = {
         "type": "theo_accum",
         "max_position": 20,
         "order_size": 3,
-        "spread_ticks": 5,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
     "WX_SUM": {
         "type": "theo_accum",
         "max_position": 20,
         "order_size": 3,
-        "spread_ticks": 4,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
     # GROUP D: cautious, low confidence
     "LHR_INDEX": {
         "type": "cautious",
-        "max_position": 15,
+        "max_position": 8,
         "order_size": 3,
-        "spread_ticks": 6,
+        "spread_ticks": 5,
         "quote_both_sides": True,
     },
     # GROUP E: derivative pricing from LON_ETF distribution
@@ -74,7 +75,7 @@ STRATEGY_CONFIGS = {
         "type": "derivative_arb",
         "max_position": 20,
         "order_size": 3,
-        "spread_ticks": 5,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
 }
@@ -174,13 +175,13 @@ def compute_quote_prices(
     half_spread = config["spread_ticks"] * tick_size / 2.0
     max_pos = config["max_position"]
 
-    # Inventory skew: push quotes to reduce position
+    # Inventory skew: push quotes to reduce position (aggressive mean-reversion)
     skew = 0.0
     if max_pos > 0:
-        skew = -(position / max_pos) * half_spread * 0.5
+        skew = -(position / max_pos) * half_spread * 2.0
 
-    # Signal skew: shift toward theo direction
-    signal_skew = signal * half_spread * 3.0
+    # Signal skew: gentle lean toward theo direction
+    signal_skew = signal * half_spread * 0.5
 
     bid_price = snap_to_tick(mid - half_spread + skew + signal_skew, tick_size, "down")
     ask_price = snap_to_tick(mid + half_spread + skew + signal_skew, tick_size, "up")
@@ -247,6 +248,21 @@ def compute_desired_orders(
     if mid is None:
         return (None, None, 0, 0)
 
+    # Theo-market divergence capping: when theo is >5% off market,
+    # blend toward market to avoid massive directional bias
+    if theo is not None and market_mid is not None and market_mid > 0:
+        divergence = abs(theo - market_mid) / market_mid
+        if divergence > 0.10:
+            # Circuit breaker: theo is wildly off — stop quoting to avoid wrong-way fills
+            return (None, None, 0, 0)
+        if divergence > 0.05:
+            mid = 0.3 * theo + 0.7 * market_mid
+
+    # Inventory-driven theo fading for arb-priority products
+    fade_factor = config.get("theo_fade_factor", 0)
+    if fade_factor > 0:
+        mid = mid - (position * fade_factor)
+
     # Compute signal: mispricing relative to theo
     if theo is not None and market_mid is not None and theo > 0:
         signal = max(-1.0, min(1.0, (theo - market_mid) / theo))
@@ -268,11 +284,14 @@ def compute_aggressive_ioc(
     position: int,
     config: dict,
     threshold: float = 0.008,
+    best_ask: float | None = None,
+    best_bid: float | None = None,
 ) -> tuple[str, float, int] | None:
     """Compute an aggressive IOC order when market deviates from theo.
 
     Returns (side, price, size) or None if no aggressive order warranted.
     side is "BUY" or "SELL".
+    Uses best_ask/best_bid for pricing when available (lifts the actual ask/hits the actual bid).
     """
     if theo <= 0 or market_mid <= 0:
         return None
@@ -287,16 +306,32 @@ def compute_aggressive_ioc(
     buy_headroom = max(0, MAX_POSITION - position)
     sell_headroom = max(0, MAX_POSITION + position)
 
+    # Position-aware scaling: reduce aggressive size as position grows
+    # in the signal direction. Hard stop at 60% of max_pos.
+    hard_limit = int(max_pos * 0.6)
+
     if mispricing > 0 and position < max_pos:
         # Theo > market: buy aggressively (lift the ask)
-        price = snap_to_tick(market_mid + 1, 1.0, "up")
-        size = min(base_size, buy_headroom)
+        if position >= hard_limit:
+            return None  # already long enough
+        pos_scale = max(0.2, 1.0 - max(0, position) / hard_limit)
+        if best_ask is not None:
+            price = snap_to_tick(best_ask, 1.0, "up")
+        else:
+            price = snap_to_tick(market_mid + 1, 1.0, "up")
+        size = min(max(1, int(base_size * pos_scale)), buy_headroom)
         if size > 0:
             return ("BUY", price, size)
     elif mispricing < 0 and position > -max_pos:
         # Theo < market: sell aggressively (hit the bid)
-        price = snap_to_tick(market_mid - 1, 1.0, "down")
-        size = min(base_size, sell_headroom)
+        if position <= -hard_limit:
+            return None  # already short enough
+        pos_scale = max(0.2, 1.0 - max(0, -position) / hard_limit)
+        if best_bid is not None:
+            price = snap_to_tick(best_bid, 1.0, "down")
+        else:
+            price = snap_to_tick(market_mid - 1, 1.0, "down")
+        size = min(max(1, int(base_size * pos_scale)), sell_headroom)
         if size > 0:
             return ("SELL", price, size)
 
