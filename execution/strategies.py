@@ -20,31 +20,30 @@ STRATEGY_CONFIGS = {
     # GROUP A: theo-based market making, aggressive sizing
     "TIDE_SPOT": {
         "type": "theo_mm",
-        "max_position": 30,
-        "order_size": 3,
-        "spread_ticks": 3,
+        "max_position": 55,
+        "order_size": 5,
+        "spread_ticks": 2,
         "quote_both_sides": True,
     },
     "WX_SPOT": {
         "type": "theo_mm",
-        "max_position": 30,
-        "order_size": 3,
-        "spread_ticks": 3,
+        "max_position": 55,
+        "order_size": 5,
+        "spread_ticks": 2,
         "quote_both_sides": True,
     },
     "LHR_COUNT": {
         "type": "theo_mm",
-        "max_position": 30,
-        "order_size": 3,
-        "spread_ticks": 4,
+        "max_position": 50,
+        "order_size": 5,
+        "spread_ticks": 3,
         "quote_both_sides": True,
-        "theo_fade_factor": 0.5,
     },
     "LON_ETF": {
         "type": "etf_synthetic",
-        "max_position": 30,
-        "order_size": 3,
-        "spread_ticks": 4,
+        "max_position": 50,
+        "order_size": 5,
+        "spread_ticks": 3,
         "quote_both_sides": True,
     },
     # GROUP B-C: accumulator products with theo
@@ -65,7 +64,7 @@ STRATEGY_CONFIGS = {
     # GROUP D: cautious, low confidence
     "LHR_INDEX": {
         "type": "cautious",
-        "max_position": 8,
+        "max_position": 15,
         "order_size": 3,
         "spread_ticks": 5,
         "quote_both_sides": True,
@@ -175,13 +174,13 @@ def compute_quote_prices(
     half_spread = config["spread_ticks"] * tick_size / 2.0
     max_pos = config["max_position"]
 
-    # Inventory skew: push quotes to reduce position (aggressive mean-reversion)
+    # Inventory skew: push quotes to reduce position
     skew = 0.0
     if max_pos > 0:
-        skew = -(position / max_pos) * half_spread * 2.0
+        skew = -(position / max_pos) * half_spread * 0.5
 
-    # Signal skew: gentle lean toward theo direction
-    signal_skew = signal * half_spread * 0.5
+    # Signal skew: lean toward theo direction
+    signal_skew = signal * half_spread * 3.0
 
     bid_price = snap_to_tick(mid - half_spread + skew + signal_skew, tick_size, "down")
     ask_price = snap_to_tick(mid + half_spread + skew + signal_skew, tick_size, "up")
