@@ -502,7 +502,3 @@ Thread-safe components, async I/O, token-bucket rate limiting, local inventory w
 - **Tidal model extrapolation** degraded over time (RMSE rose from 0.2958 to 0.3228 mAOD) as the harmonic model projected further from training data
 - **Arb position gating** at 70% was conservative — relaxing it could have captured more arb opportunities in the later session
 - **Additional alpha sources** could include market microstructure signals (order flow imbalance, book pressure) and cross-product correlation trading
-
----
-
-*Documentation generated from 436 PnL snapshots across 8 log files, totaling 10,500+ lines of trading activity recorded between 02:38 and 10:26 UTC on March 1, 2026.*
