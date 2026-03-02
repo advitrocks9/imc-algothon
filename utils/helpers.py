@@ -1,15 +1,7 @@
 """Shared helper functions."""
 import math
 
-from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Side
-
-
-def send_ioc(bot: BaseBot, order: OrderRequest) -> OrderResponse | None:
-    """Simulate IOC: place order, immediately cancel unfilled remainder."""
-    resp = bot.send_order(order)
-    if resp and resp.volume > 0:
-        bot.cancel_order(resp.id)
-    return resp
+from bot_template import OrderBook
 
 
 def best_bid(ob: OrderBook) -> float | None:

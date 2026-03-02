@@ -1,12 +1,14 @@
 # Multi-Strategy Algorithmic Trading System
 
-**Team Y1 — IMCity London Algothon 2026**
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![2nd Place](https://img.shields.io/badge/IMCity%20Algothon-2nd%20Place-silver)](https://github.com)
+[![PnL](https://img.shields.io/badge/Final%20PnL-283%2C033-brightgreen)](https://github.com)
+
+**2nd Place, IMCity London Algothon 2026**
 
 *A data-driven, multi-strategy approach combining external-data theoretical models, ETF arbitrage, aggressive directional trading, and Monte Carlo derivative pricing across 8 synthetic products tied to real-world London data.*
 
 ---
-
-## 1. Executive Summary
 
 We built a fully automated multi-strategy trading system that computes **real-world fair values** from Thames tidal harmonics, weather forecasts, and Heathrow flight schedules, then deploys **six distinct alpha strategies** across all 8 competition products.
 
@@ -48,7 +50,7 @@ The system maintained profitability throughout the entire session, never trigger
 | WX_SUM | -4,674 | -1.7% | Accumulator |
 | **TOTAL** | **+283,033** | **100%** | |
 
-**5 of 8 products were profitable.** Losses on the remaining 3 were small and controlled. The two dominant alpha sources — LHR_COUNT (flight schedule edge) and LON_ETF (arbitrage) — together account for **88.7% of all profit**.
+**5 of 8 products were profitable.** Losses on the remaining 3 were small and controlled. The two dominant alpha sources (LHR_COUNT from flight schedule edge and LON_ETF from arbitrage) together account for **88.7% of all profit**.
 
 ### System Architecture
 
@@ -92,7 +94,7 @@ The core competitive advantage of our system is computing **fair values from fir
 
 ### 3.1 Tidal Harmonic Model (TIDE_SPOT, TIDE_SWING)
 
-**Approach:** Classical tidal analysis using 4-constituent harmonic decomposition — the same technique used in professional oceanographic prediction.
+**Approach:** Classical tidal analysis using 4-constituent harmonic decomposition, the same technique used in professional oceanographic prediction.
 
 **Model:**
 
@@ -134,7 +136,7 @@ TIDE_SWING = sum(payoff_i) for i = 1..96
 
 ### 3.3 Flight Schedule Model (LHR_COUNT, LHR_INDEX)
 
-**Data source:** AeroDataBox via RapidAPI — Heathrow airport (LHR)
+**Data source:** AeroDataBox via RapidAPI (Heathrow airport, LHR)
 
 **Collection methodology:**
 - 24-hour settlement window split into two 12-hour API calls (API max span)
@@ -144,12 +146,12 @@ TIDE_SWING = sum(payoff_i) for i = 1..96
 
 **Final count:** **610 departures + 592 arrivals = 1,202 total flights**
 
-**Cancellation adjustment:** Past flights count as 100% confirmed; future flights apply a 1% cancellation rate:
+**Cancellation adjustment:** Past flights count as 100% confirmed. Future flights apply a 1% cancellation rate:
 ```
 theo = past_count + future_count x 0.99
 ```
 
-**Confidence model:** `confidence = max(5.0, future_count x 0.3)` — tightens toward zero as all flights become past (confirmed).
+**Confidence model:** `confidence = max(5.0, future_count x 0.3)`, which tightens toward zero as all flights become past (confirmed).
 
 **LHR_INDEX:** Arrivals and departures binned into 48 x 30-minute intervals:
 ```
@@ -179,7 +181,7 @@ This is a strangle-like structure with kinks at 6200, 6600, and 7000. We price i
 
 - **Background daemon thread** polling all 3 external APIs every 60 seconds
 - Thread-safe reads via `get_theo()` and `get_confidence()` protected by `threading.Lock`
-- Graceful fallback: if any API fails, previous values are retained; if no data exists, conservative defaults apply
+- Graceful fallback: if any API fails, previous values are retained. If no data exists, conservative defaults apply
 
 ### Final Theo Values (Near Settlement)
 
@@ -221,7 +223,7 @@ ask = snap_to_tick(theo + half_spread + inventory_skew + signal_skew)
 
 **Divergence Safety:**
 - If theo diverges > 5% from market mid: **blend** to 30% theo + 70% market (reduces risk from stale theos)
-- If theo diverges > 10% from market mid: **circuit breaker** — stop quoting entirely
+- If theo diverges > 10% from market mid: **circuit breaker**, stop quoting entirely
 
 **Performance:** 599 passive strategy fills recorded in the main session.
 
@@ -240,8 +242,8 @@ If edge >= 1.5 ticks -> execute arb
 
 **ETF-First Execution Protocol (Novel):**
 1. Execute the LON_ETF leg **alone first** via async aiohttp
-2. If ETF fills zero -> **abort immediately** (do not send component legs)
-3. Only if ETF fills > 0 -> fire all 3 component legs **concurrently** via `asyncio.gather`
+2. If ETF fills zero, **abort immediately** (do not send component legs)
+3. Only if ETF fills > 0, fire all 3 component legs **concurrently** via `asyncio.gather`
 
 This eliminates the common arb failure mode: filling components but not the ETF, which leaves naked directional exposure.
 
@@ -290,7 +292,7 @@ LON_FLY(S) = 2*max(0, 6200-S) + max(0, S-6200) - 2*max(0, S-6600) + 3*max(0, S-7
 
 **Implementation:** 5,000 random samples from `Normal(ETF_theo, sigma^2)`, averaging the piecewise payoff.
 
-**Performance:** LON_FLY contributed **+30,281 profit (10.7%)** — solid returns from a derivative product with limited competition, since pricing it correctly requires understanding both the ETF components and the non-linear payoff.
+**Performance:** LON_FLY contributed **+30,281 profit (10.7%)**. Solid returns from a derivative product with limited competition, since pricing it correctly requires understanding both the ETF components and the non-linear payoff.
 
 ### 4.5 Strategy 5: Accumulator Products
 
@@ -308,13 +310,13 @@ LON_FLY(S) = 2*max(0, 6200-S) + max(0, S-6200) - 2*max(0, S-6600) + 3*max(0, S-7
 
 **Rationale:** LHR_INDEX depends on the sign of the cumulative arrival/departure flow imbalance, which can flip unpredictably. We quoted conservatively to capture bid-ask spread without taking large directional bets.
 
-**Performance:** +1,583 — small positive P&L despite high uncertainty.
+**Performance:** +1,583, a small positive P&L despite high uncertainty.
 
 ---
 
 ## 5. Risk Management Framework
 
-Our layered risk management ensured that despite periods of market dislocation, the system maintained profitability and never triggered the hard stop-loss.
+Our layered risk management kept the system profitable through periods of market dislocation, never triggering the hard stop-loss.
 
 | Risk Layer | Mechanism | Parameters | Status |
 |:-----------|:----------|:-----------|:-------|
@@ -431,74 +433,18 @@ LHR_COUNT and LON_ETF showed steady profit accumulation throughout the session. 
 
 ---
 
-## 8. Competitive Advantages
-
-### 1. External Data Integration (Structural Informational Edge)
-
-While many competitors likely relied solely on market data (mid-prices, EMAs), our system computed theoretical values from **three independent real-world data sources**. This gave us a structural informational advantage, particularly on LHR_COUNT where flight schedule data produced a theo of 1,197 while the market traded around 1,250 — a persistent **4.5% mispricing** we captured aggressively for +147,992 profit.
-
-### 2. ETF-First Execution Protocol (Novel Contribution)
-
-A novel approach to multi-leg arbitrage execution. By executing the ETF leg first and aborting if it fails, we eliminated the common failure mode of filling individual components but missing the ETF, which leaves naked directional exposure. This is a meaningful improvement over naive concurrent execution.
-
-### 3. Multi-Strategy Portfolio (Confidence-Calibrated)
-
-Six distinct strategies operating simultaneously, each calibrated to the confidence level and settlement mechanics of its target product. This diversification reduces variance while maintaining high expected returns. Position limits and spreads are proportional to model confidence.
-
-### 4. Cross-Disciplinary Modeling
-
-Application of **oceanographic harmonic analysis** (4-constituent tidal decomposition) to a financial competition. This demonstrates cross-disciplinary thinking — using well-established physical science methodology to gain edge in a trading context.
-
-### 5. Monte Carlo Derivative Pricing
-
-LON_FLY's piecewise payoff structure makes analytical pricing difficult. Rather than guessing or using market mid, we used **5,000-sample Monte Carlo simulation** to price it accurately from the ETF distribution.
-
-### 6. Production-Grade Engineering
-
-Thread-safe components, async I/O, token-bucket rate limiting, local inventory with cloud reconciliation, smart order repricing, and graceful degradation on API failures. This is not a prototype — it is a production-quality trading system.
-
----
-
-## 9. Code Quality & Development History
-
-### Codebase Statistics
-
-| Metric | Value |
-|:-------|:------|
-| Total Python Lines | ~3,200 |
-| Source Files | 15 |
-| Packages | 5 (`theo/`, `data/`, `execution/`, `risk/`, `utils/`) |
-| Thread Safety | All shared state protected by `threading.Lock` |
-| Logging | Structured output with severity levels |
-| External APIs | 3 (EA Flood Monitoring, Open-Meteo, AeroDataBox) |
-
-### Development Timeline (Git History)
-
-| Phase | Key Addition |
-|:------|:-------------|
-| Foundation | Bot framework, rate limiter, risk manager |
-| Phase 1 | ETF Arbitrage engine (4-leg detection + execution) |
-| Phase 2 | Async executor, inventory manager, scratch routine |
-| Phase 3 | Full strategy engine: price tracker, order scheduler, 8-product configs |
-| Phase 4 | External data integration: Thames tidal, weather, theo engine |
-| Phase 5 | AeroDataBox flight data with disk caching |
-| Phase 6 | Infrastructure overhaul: parallel execution, SSE fills, tuned params |
-| Phase 7 | Stop-loss, tighter spreads, final parameter tuning |
-
----
-
-## 10. Lessons Learned
+## 8. Lessons Learned
 
 ### What Worked
 
-- **Flight schedule data** provided dominant, persistent alpha (52.3% of total profit) — the market consistently overpriced LHR_COUNT
-- **ETF arbitrage** was reliable and profitable, with the ETF-First execution protocol preventing failed arbs
-- **Layered risk management** kept drawdowns controlled despite volatile market conditions
-- **Confidence-proportional sizing** correctly limited exposure on uncertain products
+- **Flight schedule data** provided dominant, persistent alpha (52.3% of total profit). The market consistently overpriced LHR_COUNT.
+- **ETF arbitrage** was reliable and profitable, with the ETF-First execution protocol preventing failed arbs.
+- **Layered risk management** kept drawdowns controlled despite volatile market conditions.
+- **Confidence-proportional sizing** correctly limited exposure on uncertain products.
 
-### What Could Improve
+### What Failed or Underperformed
 
-- **Weather products** (WX_SPOT, WX_SUM) had small losses — weather forecasts have higher inherent uncertainty than flight schedules, and our confidence intervals may have been too tight
-- **Tidal model extrapolation** degraded over time (RMSE rose from 0.2958 to 0.3228 mAOD) as the harmonic model projected further from training data
-- **Arb position gating** at 70% was conservative — relaxing it could have captured more arb opportunities in the later session
-- **Additional alpha sources** could include market microstructure signals (order flow imbalance, book pressure) and cross-product correlation trading
+- **Weather products lost money.** WX_SPOT and WX_SUM both finished negative. The weather theo was not accurate enough to market-make profitably — forecasts drift too much at 15-minute resolution. Next time: widen spreads further on weather, or don't trade them at all.
+- **Tidal model degraded badly over the session.** RMSE went from 0.30 to 0.32 mAOD as we extrapolated further from training data. A 4-constituent harmonic model is too simple for an 8-hour extrapolation window. Should have refitted the model periodically using incoming observations.
+- **Arb position gating left money on the table.** The 70% cap was too conservative — we blocked arb opportunities in the second half of the session when positions were already large. Should have dynamically adjusted the gate based on time-to-settlement and expected unwind cost.
+- **No microstructure signals at all.** We traded purely on theo vs. market price. Order flow imbalance, book pressure, and cross-product momentum were all ignored. A lot of edge was sitting there unused.

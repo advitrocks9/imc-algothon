@@ -124,10 +124,6 @@ class TradingBot(BaseBot):
         self.limiter.acquire()
         return self.get_positions()
 
-    def safe_get_orderbook(self, symbol: str) -> OrderBook:
-        self.limiter.acquire()
-        return self.get_orderbook(symbol)
-
     def safe_send_order(self, order: OrderRequest) -> OrderResponse | None:
         self.limiter.acquire()
         return self.send_order(order)
