@@ -1,9 +1,11 @@
 """Thames tidal data fetching and harmonic prediction model."""
+
+import logging
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import requests
-import logging
-from datetime import datetime
 
 log = logging.getLogger("data.thames")
 
@@ -50,7 +52,7 @@ class TidalModel:
         "O1": 25.8193,
     }
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.coeffs: np.ndarray | None = None
         self._t0: datetime | None = None
         self.rmse: float = 0.5
@@ -69,22 +71,23 @@ class TidalModel:
         t_hours = (readings["time"] - self._t0).dt.total_seconds().values / 3600.0
         y = readings["level"].values
 
-        # Build design matrix: [1, cos(ω1*t), sin(ω1*t), cos(ω2*t), sin(ω2*t), ...]
+        # Design matrix: intercept + [cos(wt), sin(wt)] for each constituent
         X = np.ones((len(t_hours), 1))
         for period in self.CONSTITUENTS.values():
             omega = 2 * np.pi / period
             X = np.column_stack([X, np.cos(omega * t_hours), np.sin(omega * t_hours)])
 
-        # Least-squares fit
+        # OLS fit: coeffs = (X'X)^{-1} X'y
         self.coeffs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
         residuals = y - X @ self.coeffs
-        self.rmse = float(np.sqrt(np.mean(residuals ** 2)))
+        self.rmse = float(np.sqrt(np.mean(residuals**2)))
         log.info(f"Tidal model fit: RMSE = {self.rmse:.4f} mAOD, {len(readings)} obs")
 
     def predict(self, target_time: datetime) -> float | None:
         """Predict water level (mAOD) at a specific time."""
         if self.coeffs is None or self._t0 is None:
             return None
+        # Convert target time to hours since training epoch
         t_hours = (target_time - self._t0).total_seconds() / 3600.0
         X = np.array([1.0])
         for period in self.CONSTITUENTS.values():
@@ -92,7 +95,7 @@ class TidalModel:
             X = np.append(X, [np.cos(omega * t_hours), np.sin(omega * t_hours)])
         return float(X @ self.coeffs)
 
-    def predict_series(self, times: list[datetime]) -> list[float]:
+    def predict_series(self, times: list[datetime]) -> list[float | None]:
         """Predict water levels at multiple times."""
         return [self.predict(t) for t in times]
 

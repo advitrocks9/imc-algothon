@@ -1,0 +1,44 @@
+[project]
+name = "algothon"
+version = "1.0.0"
+description = "1st-place IMC Algothon 2026 multi-strategy trading system"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "requests>=2.31",
+    "sseclient-py>=1.7",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "pre-commit>=3.7",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",    # line length handled by formatter
+    "SIM105",  # contextlib.suppress vs try/except/pass — prefer explicit try/except in trading code
+    "SIM108",  # ternary vs if/else — prefer readable if/else for complex trading logic
+    "RUF012",  # mutable class defaults — ClassVar annotation is noise on frozen config dicts
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bot", "config", "data", "execution", "risk", "theo", "utils"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true

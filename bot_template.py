@@ -1,18 +1,20 @@
-"""CMI Exchange bot framework.
+"""CMI Exchange bot framework (provided by competition organizers).
 
 Lightweight bot base class for connecting to the CMI simulated exchange.
+Includes dataclass models for orders, trades, and order books.
+This file is part of the competition infrastructure and was not authored by Team Y1.
 """
 
 import json
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cached_property
 from threading import Thread
 from traceback import format_exc
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import requests
 import sseclient
@@ -159,7 +161,9 @@ class _SSEThread(Thread):
                 trades = data if isinstance(data, list) else [data]
                 trade_fields = {f.name for f in Trade.__dataclass_fields__.values()}
                 for t in trades:
-                    self._handle_trade_event(Trade(**{k: v for k, v in t.items() if k in trade_fields}))
+                    self._handle_trade_event(
+                        Trade(**{k: v for k, v in t.items() if k in trade_fields})
+                    )
 
     def _on_order_event(self, data: dict[str, Any]):
         buy_orders = sorted(
@@ -176,12 +180,13 @@ class _SSEThread(Thread):
             ],
             key=lambda o: o.price,
         )
-        self._handle_orderbook(OrderBook(data["productsymbol"], data["tickSize"], buy_orders, sell_orders))
+        self._handle_orderbook(
+            OrderBook(data["productsymbol"], data["tickSize"], buy_orders, sell_orders)
+        )
 
 
 class BaseBot(ABC):
-    """Base bot for CMI Exchange.
-    """
+    """Base bot for CMI Exchange."""
 
     def __init__(self, cmi_url: str, username: str, password: str):
         self._cmi_url = cmi_url.rstrip("/")
@@ -341,11 +346,17 @@ class BaseBot(ABC):
         response.raise_for_status()
         data = response.json()
         buy_orders = sorted(
-            [Order(price=e["price"], volume=e["volume"], own_volume=e["userOrderVolume"]) for e in data.get("buy", [])],
+            [
+                Order(price=e["price"], volume=e["volume"], own_volume=e["userOrderVolume"])
+                for e in data.get("buy", [])
+            ],
             key=lambda o: -o.price,
         )
         sell_orders = sorted(
-            [Order(price=e["price"], volume=e["volume"], own_volume=e["userOrderVolume"]) for e in data.get("sell", [])],
+            [
+                Order(price=e["price"], volume=e["volume"], own_volume=e["userOrderVolume"])
+                for e in data.get("sell", [])
+            ],
             key=lambda o: o.price,
         )
         return OrderBook(data["product"], data["tickSize"], buy_orders, sell_orders)

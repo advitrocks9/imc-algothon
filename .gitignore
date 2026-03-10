@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments
 venv/
+.venv/
 env/
 .env
 
@@ -20,5 +21,15 @@ env/
 # Logs
 *.log
 
-# Cache
-*.json
+# Build / distribution
+dist/
+build/
+*.egg-info/
+
+# Generated data caches
+data/flight_cache.json
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

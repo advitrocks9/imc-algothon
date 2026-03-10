@@ -1,4 +1,5 @@
 """Position and risk management."""
+
 import threading
 
 from bot_template import Side
@@ -12,7 +13,7 @@ class RiskManager:
     reconciled against the exchange via get_positions().
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._positions: dict[str, int] = {}
         self._pnl: dict = {}
@@ -22,19 +23,24 @@ class RiskManager:
             self._positions = dict(positions)
 
     def get_position(self, symbol: str) -> int:
+        """Return current position for a symbol (0 if not tracked)."""
         with self._lock:
             return self._positions.get(symbol, 0)
 
     def can_buy(self, symbol: str, volume: int) -> bool:
+        """True if buying volume contracts would stay within MAX_POSITION."""
         return self.get_position(symbol) + volume <= MAX_POSITION
 
     def can_sell(self, symbol: str, volume: int) -> bool:
+        """True if selling volume contracts would stay within -MAX_POSITION."""
         return self.get_position(symbol) - volume >= -MAX_POSITION
 
     def max_buy_volume(self, symbol: str) -> int:
+        """Maximum contracts that can be bought without exceeding the position limit."""
         return max(0, MAX_POSITION - self.get_position(symbol))
 
     def max_sell_volume(self, symbol: str) -> int:
+        """Maximum contracts that can be sold without exceeding the position limit."""
         return max(0, MAX_POSITION + self.get_position(symbol))
 
     def apply_fill(self, product: str, side: Side, filled_volume: int) -> None:
@@ -49,6 +55,7 @@ class RiskManager:
                 self._positions[product] = current - filled_volume
 
     def update_pnl(self, pnl: dict) -> None:
+        """Store latest PnL snapshot from the exchange."""
         with self._lock:
             self._pnl = pnl
 

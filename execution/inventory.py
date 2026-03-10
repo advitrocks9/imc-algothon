@@ -23,7 +23,7 @@ class InventoryManager:
     methods concurrently — all public methods are lock-protected.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._positions: dict[str, int] = {}
         self._last_cloud_sync: float = 0.0
@@ -56,8 +56,7 @@ class InventoryManager:
             else:
                 self._positions[product] = current - filled_volume
             log.debug(
-                f"Local fill: {side} {filled_volume}x {product} "
-                f"-> pos={self._positions[product]}"
+                f"Local fill: {side} {filled_volume}x {product} -> pos={self._positions[product]}"
             )
 
     def apply_fills_from_report(self, leg_results: list) -> None:

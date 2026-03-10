@@ -1,7 +1,9 @@
 """Shared helper functions."""
-import math
 
-from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Side
+import math
+from typing import Literal
+
+from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse
 
 
 def send_ioc(bot: BaseBot, order: OrderRequest) -> OrderResponse | None:
@@ -47,6 +49,7 @@ def best_ask_with_volume(ob: OrderBook) -> tuple[float, int] | None:
 
 
 def mid_price(ob: OrderBook) -> float | None:
+    """Compute mid-price as average of best bid and best ask, excluding own orders."""
     b = best_bid(ob)
     a = best_ask(ob)
     if b is not None and a is not None:
@@ -54,7 +57,9 @@ def mid_price(ob: OrderBook) -> float | None:
     return None
 
 
-def snap_to_tick(price: float, tick: float, direction: str = "nearest") -> float:
+def snap_to_tick(
+    price: float, tick: float, direction: Literal["up", "down", "nearest"] = "nearest"
+) -> float:
     """Snap a price to the nearest valid tick. Direction: 'up', 'down', 'nearest'."""
     if direction == "down":
         return math.floor(price / tick) * tick

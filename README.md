@@ -1,10 +1,54 @@
+<div align="center">
+
 # Multi-Strategy Algorithmic Trading System
 
-**Team Y1 — IMCity London Algothon 2026**
+**1st Place -- IMC Algothon 2026**
 
 *A data-driven, multi-strategy approach combining external-data theoretical models, ETF arbitrage, aggressive directional trading, and Monte Carlo derivative pricing across 8 synthetic products tied to real-world London data.*
 
+![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![1st Place](https://img.shields.io/badge/Result-1st_Place-gold)
+![PnL](https://img.shields.io/badge/PnL-283%2C033-brightgreen)
+![LOC](https://img.shields.io/badge/Lines-3%2C200+-lightgrey)
+![Strategies](https://img.shields.io/badge/Strategies-6-blueviolet)
+![Products](https://img.shields.io/badge/Products-8%2F8-orange)
+![Ruff](https://img.shields.io/badge/code_style-ruff-261230?logo=ruff)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+</div>
+
 ---
+
+## Highlights
+
+- **Structural informational edge** -- computed fair values from Thames tidal harmonics, weather forecasts, and Heathrow flight schedules while competitors relied on market data alone
+- **Novel ETF-First execution** -- 4-leg arbitrage protocol that executes the ETF leg first and aborts on failure, eliminating naked directional exposure from partial fills
+- **Production-grade infrastructure** -- async I/O, token-bucket rate limiting, SSE-driven inventory tracking, thread-safe components, and cloud reconciliation
+- **Confidence-calibrated sizing** -- six strategies with position limits and spreads proportional to model confidence, preventing overexposure on uncertain products
+- **Result: 283,033 PnL** -- 5 of 8 products profitable, ~22 hours of continuous trading, stop-loss never triggered
+
+---
+
+## Table of Contents
+
+- [Executive Summary](#1-executive-summary)
+- [Product Universe & Market Understanding](#2-product-universe--market-understanding)
+- [Data Pipeline & Theo Computation](#3-data-pipeline--theoretical-value-computation)
+- [Trading Strategies](#4-trading-strategies)
+- [Risk Management](#5-risk-management-framework)
+- [Execution Infrastructure](#6-execution-infrastructure)
+- [Performance Analysis](#7-performance-analysis)
+- [Competitive Advantages](#8-competitive-advantages)
+- [Code Quality & Development History](#9-code-quality--development-history)
+- [Lessons Learned](#10-lessons-learned)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Testing](#testing)
+- [License](#license)
+
+---
+
+The IMC Algothon is a 24-hour algorithmic trading competition where teams build fully automated systems to trade synthetic products on a simulated exchange. Products settle against real-world London data -- Thames tidal levels, weather conditions, and Heathrow flight schedules -- creating a unique challenge that rewards cross-disciplinary modeling and robust engineering under time pressure.
 
 ## 1. Executive Summary
 
@@ -23,14 +67,15 @@ We built a fully automated multi-strategy trading system that computes **real-wo
 | Aggressive Directional Fills | 305 |
 | Passive Market-Making Fills | 599 |
 | Products Traded | 8 / 8 |
-| Active Trading Duration | ~8 hours |
+| Active Trading Duration | ~22 hours (full competition) |
+| Logged Session | ~8 hours (detailed logging added late) |
 | Stop-Loss Triggered | Never |
 
 ### PnL Trajectory
 
 ![PnL Trajectory](docs/pnl_trajectory.png)
 
-The system maintained profitability throughout the entire session, never triggering the stop-loss at 250,000. The peak of 301,519 was reached at 03:19 UTC, with a trough of 237,260 at 09:58 UTC during a period of market dislocation before recovery to 283,033 at the final checkpoint.
+The bot traded continuously for the full ~22-hour competition window (14:30 Sat to 12:00 Sun UTC). Detailed logging was added approximately 8 hours before settlement, so the statistics below reflect the logged portion of the session. The system never triggered the stop-loss at 250,000. The peak of 301,519 was reached at 03:19 UTC, with a trough of 237,260 at 09:58 UTC during a period of market dislocation before recovery to 283,033 at the final checkpoint.
 
 ### P&L Attribution
 
@@ -48,7 +93,7 @@ The system maintained profitability throughout the entire session, never trigger
 | WX_SUM | -4,674 | -1.7% | Accumulator |
 | **TOTAL** | **+283,033** | **100%** | |
 
-**5 of 8 products were profitable.** Losses on the remaining 3 were small and controlled. The two dominant alpha sources — LHR_COUNT (flight schedule edge) and LON_ETF (arbitrage) — together account for **88.7% of all profit**.
+**5 of 8 products were profitable.** Losses on the remaining 3 were small and controlled. The two dominant alpha sources -- LHR_COUNT (flight schedule edge) and LON_ETF (arbitrage) -- together account for **88.7% of all profit**.
 
 ### System Architecture
 
@@ -92,7 +137,7 @@ The core competitive advantage of our system is computing **fair values from fir
 
 ### 3.1 Tidal Harmonic Model (TIDE_SPOT, TIDE_SWING)
 
-**Approach:** Classical tidal analysis using 4-constituent harmonic decomposition — the same technique used in professional oceanographic prediction.
+**Approach:** Classical tidal analysis using 4-constituent harmonic decomposition -- the same technique used in professional oceanographic prediction.
 
 **Model:**
 
@@ -134,7 +179,7 @@ TIDE_SWING = sum(payoff_i) for i = 1..96
 
 ### 3.3 Flight Schedule Model (LHR_COUNT, LHR_INDEX)
 
-**Data source:** AeroDataBox via RapidAPI — Heathrow airport (LHR)
+**Data source:** AeroDataBox via RapidAPI -- Heathrow airport (LHR)
 
 **Collection methodology:**
 - 24-hour settlement window split into two 12-hour API calls (API max span)
@@ -149,7 +194,7 @@ TIDE_SWING = sum(payoff_i) for i = 1..96
 theo = past_count + future_count x 0.99
 ```
 
-**Confidence model:** `confidence = max(5.0, future_count x 0.3)` — tightens toward zero as all flights become past (confirmed).
+**Confidence model:** `confidence = max(5.0, future_count x 0.3)` -- tightens toward zero as all flights become past (confirmed).
 
 **LHR_INDEX:** Arrivals and departures binned into 48 x 30-minute intervals:
 ```
@@ -221,9 +266,9 @@ ask = snap_to_tick(theo + half_spread + inventory_skew + signal_skew)
 
 **Divergence Safety:**
 - If theo diverges > 5% from market mid: **blend** to 30% theo + 70% market (reduces risk from stale theos)
-- If theo diverges > 10% from market mid: **circuit breaker** — stop quoting entirely
+- If theo diverges > 10% from market mid: **circuit breaker** -- stop quoting entirely
 
-**Performance:** 599 passive strategy fills recorded in the main session.
+**Performance:** 599 passive strategy fills recorded in the logged session window.
 
 ### 4.2 Strategy 2: ETF Arbitrage
 
@@ -290,7 +335,7 @@ LON_FLY(S) = 2*max(0, 6200-S) + max(0, S-6200) - 2*max(0, S-6600) + 3*max(0, S-7
 
 **Implementation:** 5,000 random samples from `Normal(ETF_theo, sigma^2)`, averaging the piecewise payoff.
 
-**Performance:** LON_FLY contributed **+30,281 profit (10.7%)** — solid returns from a derivative product with limited competition, since pricing it correctly requires understanding both the ETF components and the non-linear payoff.
+**Performance:** LON_FLY contributed **+30,281 profit (10.7%)** -- solid returns from a derivative product with limited competition, since pricing it correctly requires understanding both the ETF components and the non-linear payoff.
 
 ### 4.5 Strategy 5: Accumulator Products
 
@@ -308,7 +353,7 @@ LON_FLY(S) = 2*max(0, 6200-S) + max(0, S-6200) - 2*max(0, S-6600) + 3*max(0, S-7
 
 **Rationale:** LHR_INDEX depends on the sign of the cumulative arrival/departure flow imbalance, which can flip unpredictably. We quoted conservatively to capture bid-ask spread without taking large directional bets.
 
-**Performance:** +1,583 — small positive P&L despite high uncertainty.
+**Performance:** +1,583 -- small positive P&L despite high uncertainty.
 
 ---
 
@@ -341,25 +386,23 @@ At the final checkpoint, all positions were well within the exchange limit of 10
 
 ### Architecture
 
-```
-External APIs (Thames / Weather / Flights)
-        |
-        v
-   TheoEngine (background daemon thread, 60s poll)
-        |
-        v
-   TradingBot._main_tick()  <----  SSE Stream (free, real-time)
-   |          |          |           |         |
-   v          v          v           v         v
- Arb       Strategy   Aggressive  Emergency  on_trades()
- Engine    Tick       IOC Tick    Unwind       |
-   |          |          |           |         v
-   v          v          v           v    InventoryManager
- AsyncExecutor  OrderScheduler  safe_send_ioc
- (ETF-first)    (round-robin)
-        |
-        v
-   Exchange REST API (16 req/sec, token bucket)
+```mermaid
+graph TD
+    APIs["External APIs<br/>(Thames / Weather / Flights)"] --> TE["TheoEngine<br/>Background daemon, 60s poll"]
+    TE --> MT["TradingBot._main_tick()"]
+    SSE["SSE Stream<br/>(free, real-time)"] --> MT
+    SSE --> OT["on_trades()"]
+    OT --> IM["InventoryManager"]
+    MT --> AE["ArbitrageEngine"]
+    MT --> ST["Strategy Tick"]
+    MT --> AG["Aggressive IOC Tick"]
+    MT --> EU["Emergency Unwind"]
+    AE --> EX["AsyncExecutor<br/>(ETF-First protocol)"]
+    ST --> OS["OrderScheduler<br/>(weighted round-robin)"]
+    EX --> REST["Exchange REST API<br/>(16 req/sec, token bucket)"]
+    OS --> REST
+    AG --> REST
+    EU --> REST
 ```
 
 ### Key Infrastructure Components
@@ -406,6 +449,8 @@ LHR_COUNT and LON_ETF showed steady profit accumulation throughout the session. 
 
 ![Trading Activity](docs/trading_activity.png)
 
+*Counts below are from the logged ~8-hour window. The bot traded for the full ~22-hour competition; actual totals are higher.*
+
 | Metric | Count |
 |:-------|------:|
 | Total Fill Events (OWN FILL) | 1,946 |
@@ -435,7 +480,7 @@ LHR_COUNT and LON_ETF showed steady profit accumulation throughout the session. 
 
 ### 1. External Data Integration (Structural Informational Edge)
 
-While many competitors likely relied solely on market data (mid-prices, EMAs), our system computed theoretical values from **three independent real-world data sources**. This gave us a structural informational advantage, particularly on LHR_COUNT where flight schedule data produced a theo of 1,197 while the market traded around 1,250 — a persistent **4.5% mispricing** we captured aggressively for +147,992 profit.
+While many competitors likely relied solely on market data (mid-prices, EMAs), our system computed theoretical values from **three independent real-world data sources**. This gave us a structural informational advantage, particularly on LHR_COUNT where flight schedule data produced a theo of 1,197 while the market traded around 1,250 -- a persistent **4.5% mispricing** we captured aggressively for +147,992 profit.
 
 ### 2. ETF-First Execution Protocol (Novel Contribution)
 
@@ -447,7 +492,7 @@ Six distinct strategies operating simultaneously, each calibrated to the confide
 
 ### 4. Cross-Disciplinary Modeling
 
-Application of **oceanographic harmonic analysis** (4-constituent tidal decomposition) to a financial competition. This demonstrates cross-disciplinary thinking — using well-established physical science methodology to gain edge in a trading context.
+Application of **oceanographic harmonic analysis** (4-constituent tidal decomposition) to a financial competition. This demonstrates cross-disciplinary thinking -- using well-established physical science methodology to gain edge in a trading context.
 
 ### 5. Monte Carlo Derivative Pricing
 
@@ -455,7 +500,7 @@ LON_FLY's piecewise payoff structure makes analytical pricing difficult. Rather 
 
 ### 6. Production-Grade Engineering
 
-Thread-safe components, async I/O, token-bucket rate limiting, local inventory with cloud reconciliation, smart order repricing, and graceful degradation on API failures. This is not a prototype — it is a production-quality trading system.
+Thread-safe components, async I/O, token-bucket rate limiting, local inventory with cloud reconciliation, smart order repricing, and graceful degradation on API failures. This is not a prototype -- it is a production-quality trading system.
 
 ---
 
@@ -469,6 +514,8 @@ Thread-safe components, async I/O, token-bucket rate limiting, local inventory w
 | Source Files | 15 |
 | Packages | 5 (`theo/`, `data/`, `execution/`, `risk/`, `utils/`) |
 | Thread Safety | All shared state protected by `threading.Lock` |
+| Type Annotations | All function signatures typed |
+| Linting | Ruff (E, F, W, I, UP, B, SIM, RUF) |
 | Logging | Structured output with severity levels |
 | External APIs | 3 (EA Flood Monitoring, Open-Meteo, AeroDataBox) |
 
@@ -491,14 +538,90 @@ Thread-safe components, async I/O, token-bucket rate limiting, local inventory w
 
 ### What Worked
 
-- **Flight schedule data** provided dominant, persistent alpha (52.3% of total profit) — the market consistently overpriced LHR_COUNT
+- **Flight schedule data** provided dominant, persistent alpha (52.3% of total profit) -- the market consistently overpriced LHR_COUNT
 - **ETF arbitrage** was reliable and profitable, with the ETF-First execution protocol preventing failed arbs
 - **Layered risk management** kept drawdowns controlled despite volatile market conditions
 - **Confidence-proportional sizing** correctly limited exposure on uncertain products
 
 ### What Could Improve
 
-- **Weather products** (WX_SPOT, WX_SUM) had small losses — weather forecasts have higher inherent uncertainty than flight schedules, and our confidence intervals may have been too tight
+- **Weather products** (WX_SPOT, WX_SUM) had small losses -- weather forecasts have higher inherent uncertainty than flight schedules, and our confidence intervals may have been too tight
 - **Tidal model extrapolation** degraded over time (RMSE rose from 0.2958 to 0.3228 mAOD) as the harmonic model projected further from training data
-- **Arb position gating** at 70% was conservative — relaxing it could have captured more arb opportunities in the later session
+- **Arb position gating** at 70% was conservative -- relaxing it could have captured more arb opportunities in the later session
 - **Additional alpha sources** could include market microstructure signals (order flow imbalance, book pressure) and cross-product correlation trading
+
+---
+
+## Project Structure
+
+```
+algothon/
+├── bot.py                      # Main TradingBot orchestrator (561 LOC)
+├── bot_template.py             # Competition-provided exchange framework
+├── config.py                   # All tunable constants and parameters
+├── main.py                     # Entry point
+├── data/
+│   ├── flights.py              # AeroDataBox flight schedules + disk cache
+│   ├── thames.py               # EA Flood Monitoring tidal harmonic model
+│   ├── weather.py              # Open-Meteo weather data
+│   └── price_tracker.py        # SSE-fed EMA signals and volatility
+├── execution/
+│   ├── arbitrage.py            # 4-leg ETF arbitrage detection + execution
+│   ├── executor.py             # Async ETF-First order executor
+│   ├── inventory.py            # Local inventory + cloud reconciliation
+│   ├── order_scheduler.py      # Weighted round-robin scheduling
+│   ├── scratch.py              # Partial-fill scratch recovery
+│   └── strategies.py           # Per-product quoting and sizing logic
+├── risk/
+│   └── manager.py              # Position limits and risk checks
+├── theo/
+│   └── engine.py               # Fair value computation for all 8 products
+├── utils/
+│   ├── helpers.py              # Order book helpers, snap_to_tick
+│   └── rate_limiter.py         # Token-bucket rate limiter
+├── tests/                      # Unit tests for pure functions
+├── docs/                       # Performance charts and visualizations
+└── logs/                       # Trading session logs
+```
+
+## Getting Started
+
+```bash
+# Clone and set up
+git clone <repo-url>
+cd algothon
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Configure credentials
+cp .env.example .env
+# Edit .env with your CMI exchange credentials and AeroDataBox API key
+
+# Run the trading bot
+python main.py
+
+# Development commands
+make format      # Auto-format with Ruff
+make lint        # Lint check
+make typecheck   # Mypy type checking
+make test        # Run unit tests
+make clean       # Remove caches
+```
+
+## Testing
+
+```bash
+pytest tests/ -v
+```
+
+Tests cover the core mathematical functions -- payoff calculations, order sizing, tick rounding -- to verify correctness without requiring exchange connectivity. See [`tests/`](tests/) for details.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+Built by <strong>Team Y1</strong> for the <strong>IMC Algothon 2026</strong>
+</p>

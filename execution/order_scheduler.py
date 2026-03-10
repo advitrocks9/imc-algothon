@@ -3,6 +3,7 @@
 OrderScheduler: weighted round-robin giving Group A 4x priority.
 RestingOrderManager: tracks GTC orders, only reprices when needed.
 """
+
 import time
 from collections import Counter
 
@@ -20,7 +21,8 @@ class OrderScheduler:
     At 1 req/sec ≈ Group A refreshed every ~5s, others every ~20s.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Build weighted round-robin queue: Group A gets 4x scheduling priority."""
         raw: list[str] = []
         for sym in GROUP_A:
             raw.extend([sym] * 4)
@@ -31,6 +33,7 @@ class OrderScheduler:
         self._index = 0
 
     def next_symbol(self) -> str:
+        """Return the next symbol to process in the round-robin cycle."""
         sym = self._queue[self._index % len(self._queue)]
         self._index += 1
         return sym
@@ -55,7 +58,7 @@ class RestingOrderManager:
     saving REST requests.
     """
 
-    def __init__(self, reprice_threshold: float = 3.0, stale_seconds: float = 120.0):
+    def __init__(self, reprice_threshold: float = 3.0, stale_seconds: float = 120.0) -> None:
         self._reprice_threshold = reprice_threshold
         self._stale_seconds = stale_seconds
         # symbol -> {"bid_id", "ask_id", "bid_price", "ask_price", "bid_time", "ask_time"}
@@ -76,26 +79,27 @@ class RestingOrderManager:
         if new_bid is not None:
             old_bid = current.get("bid_price")
             bid_time = current.get("bid_time", 0)
-            if old_bid is None:
-                need_bid = True
-            elif abs(new_bid - old_bid) >= self._reprice_threshold:
-                need_bid = True
-            elif (now - bid_time) > self._stale_seconds:
+            if (
+                old_bid is None
+                or abs(new_bid - old_bid) >= self._reprice_threshold
+                or (now - bid_time) > self._stale_seconds
+            ):
                 need_bid = True
 
         if new_ask is not None:
             old_ask = current.get("ask_price")
             ask_time = current.get("ask_time", 0)
-            if old_ask is None:
-                need_ask = True
-            elif abs(new_ask - old_ask) >= self._reprice_threshold:
-                need_ask = True
-            elif (now - ask_time) > self._stale_seconds:
+            if (
+                old_ask is None
+                or abs(new_ask - old_ask) >= self._reprice_threshold
+                or (now - ask_time) > self._stale_seconds
+            ):
                 need_ask = True
 
         return (need_bid, need_ask)
 
     def record_order(self, symbol: str, side: str, order_id: str, price: float) -> None:
+        """Track a placed GTC order for later reprice/cancel decisions."""
         if symbol not in self._orders:
             self._orders[symbol] = {}
         now = time.monotonic()
@@ -109,6 +113,7 @@ class RestingOrderManager:
             self._orders[symbol]["ask_time"] = now
 
     def get_order_id(self, symbol: str, side: str) -> str | None:
+        """Return the tracked order ID for a symbol/side, or None."""
         current = self._orders.get(symbol)
         if current is None:
             return None

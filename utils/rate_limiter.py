@@ -3,6 +3,7 @@
 Supports N requests per second with burst capability.
 Thread-safe: multiple threads can acquire tokens concurrently.
 """
+
 import threading
 import time
 
@@ -19,16 +20,16 @@ class RateLimiter:
         # ... make request ...
     """
 
-    def __init__(self, max_rps: float = 8.0):
+    def __init__(self, max_rps: float = 8.0) -> None:
         self._max_tokens = max_rps
         self._refill_rate = max_rps  # tokens per second
-        self._tokens = max_rps      # start full
+        self._tokens = max_rps  # start full
         self._lock = threading.Lock()
         self._last_refill = time.monotonic()
 
     def acquire(self) -> None:
         """Block until a token is available, then consume one."""
-        while True:
+        while True:  # Spin-wait with sleep until a token becomes available
             with self._lock:
                 self._refill()
                 if self._tokens >= 1.0:
@@ -42,5 +43,6 @@ class RateLimiter:
         """Add tokens based on elapsed time. Must be called under lock."""
         now = time.monotonic()
         elapsed = now - self._last_refill
+        # Refill tokens proportional to elapsed time, capped at bucket size
         self._tokens = min(self._max_tokens, self._tokens + elapsed * self._refill_rate)
         self._last_refill = now

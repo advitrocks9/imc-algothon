@@ -3,22 +3,24 @@
 Runs in a background daemon thread, polling APIs every THEO_POLL_INTERVAL seconds.
 Thread-safe reads via get_theo() and get_confidence().
 """
-import threading
-import time
+
 import logging
 import math
-from datetime import datetime, timezone, timedelta
+import threading
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
-from data.thames import fetch_thames_readings, TidalModel
-from data.weather import fetch_weather
+from config import AERODATABOX_KEY, COMP_START, SETTLEMENT_TIME, SETTLEMENT_WINDOW_START
 from data.flights import (
-    fetch_aerodatabox_flights, estimate_total_lhr_count,
-    bin_flights_30min, compute_lhr_index,
+    bin_flights_30min,
+    compute_lhr_index,
+    estimate_total_lhr_count,
+    fetch_aerodatabox_flights,
 )
-from config import COMP_START, SETTLEMENT_TIME, SETTLEMENT_WINDOW_START, AERODATABOX_KEY
+from data.thames import TidalModel, fetch_thames_readings
+from data.weather import fetch_weather
 
 log = logging.getLogger("theo.engine")
 
@@ -43,7 +45,7 @@ def strangle_value(diff_cm: float) -> float:
 class TheoEngine:
     """Manages all data sources and computes theos for all products."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._theos: dict[str, float | None] = {}
         self._confidence: dict[str, float] = {}
@@ -96,6 +98,7 @@ class TheoEngine:
                 self._fetch_and_compute()
 
     def _fetch_and_compute(self) -> None:
+        """Fetch all external data sources and recompute all theoretical values."""
         self._fetch_thames()
         self._fetch_weather()
         self._fetch_flights()
@@ -104,6 +107,7 @@ class TheoEngine:
     # --- Data fetching ---
 
     def _fetch_thames(self) -> None:
+        """Fetch Thames tidal readings from the EA Flood Monitoring API."""
         try:
             readings = fetch_thames_readings(limit=500)
             if not readings.empty:
@@ -112,15 +116,19 @@ class TheoEngine:
             log.error(f"Thames fetch failed: {e}")
 
     def _fetch_weather(self) -> None:
+        """Fetch 15-minute weather forecast from Open-Meteo."""
         try:
             self._weather_df = fetch_weather(past_steps=96, forecast_steps=96)
         except Exception as e:
             log.error(f"Weather fetch failed: {e}")
 
     def _fetch_flights(self) -> None:
+        """Fetch Heathrow flight schedules from AeroDataBox, with disk cache fallback."""
         try:
             new_data = fetch_aerodatabox_flights(
-                AERODATABOX_KEY, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME,
+                AERODATABOX_KEY,
+                SETTLEMENT_WINDOW_START,
+                SETTLEMENT_TIME,
             )
             dep_count = new_data.get("dep_count", 0)
             arr_count = new_data.get("arr_count", 0)
@@ -130,12 +138,13 @@ class TheoEngine:
                 # Good data — update
                 self._flight_data = new_data
                 log.info(
-                    f"AeroDataBox flights: {dep_count} deps + {arr_count} arrs "
-                    f"= {total} total"
+                    f"AeroDataBox flights: {dep_count} deps + {arr_count} arrs = {total} total"
                 )
             elif self._flight_data is not None:
                 # API returned 0 flights (likely 429 fallback) — keep old data
-                old_total = self._flight_data.get("dep_count", 0) + self._flight_data.get("arr_count", 0)
+                old_total = self._flight_data.get("dep_count", 0) + self._flight_data.get(
+                    "arr_count", 0
+                )
                 log.warning(
                     f"AeroDataBox returned 0 flights (API error?), "
                     f"keeping previous data ({old_total} flights)"
@@ -150,7 +159,8 @@ class TheoEngine:
     # --- Theo computations ---
 
     def _compute_all_theos(self) -> None:
-        now = datetime.now(timezone.utc)
+        """Recompute fair values for all 8 products from the latest external data."""
+        now = datetime.now(UTC)
         settlement = SETTLEMENT_TIME
         hours_elapsed = (now - COMP_START).total_seconds() / 3600.0
         total_hours = (SETTLEMENT_TIME - COMP_START).total_seconds() / 3600.0
@@ -208,10 +218,13 @@ class TheoEngine:
         self._set_theo("WX_SPOT", theo, conf)
 
     def _compute_lhr_count(self, hours_elapsed: float, total_hours: float) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._flight_data is not None:
             theo, conf = estimate_total_lhr_count(
-                self._flight_data, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME, now,
+                self._flight_data,
+                SETTLEMENT_WINDOW_START,
+                SETTLEMENT_TIME,
+                now,
             )
             self._set_theo("LHR_COUNT", theo, conf)
         else:
@@ -219,6 +232,7 @@ class TheoEngine:
             self._set_theo("LHR_COUNT", 1300, 200.0)
 
     def _compute_lon_etf(self) -> None:
+        """LON_ETF = TIDE_SPOT + WX_SPOT + LHR_COUNT with Pythagorean confidence propagation."""
         tide = self.get_theo("TIDE_SPOT")
         wx = self.get_theo("WX_SPOT")
         lhr = self.get_theo("LHR_COUNT")
@@ -231,20 +245,26 @@ class TheoEngine:
             self._set_theo("LON_ETF", round(etf_theo), conf)
 
     def _compute_lon_fly(self) -> None:
+        """Price LON_FLY via 5,000-sample Monte Carlo on the LON_ETF distribution."""
         etf_theo = self.get_theo("LON_ETF")
         etf_conf = self.get_confidence("LON_ETF")
         if etf_theo is None:
             return
 
         # Monte Carlo: sample from N(etf_theo, (conf/2)^2) and average payoff
-        sigma = max(etf_conf / 2.0, 50.0)
-        samples = np.random.normal(etf_theo, sigma, 5000)
+        sigma = max(
+            etf_conf / 2.0, 50.0
+        )  # Floor sigma at 50 to avoid degenerate Monte Carlo distribution
+        samples = np.random.normal(
+            etf_theo, sigma, 5000
+        )  # Draw from N(mu, sigma^2) for Monte Carlo pricing
         payoffs = [lon_fly_payoff(s) for s in samples]
         theo = round(float(np.mean(payoffs)))
         conf = float(np.std(payoffs))
         self._set_theo("LON_FLY", theo, conf)
 
     def _compute_wx_sum(self, now: datetime) -> None:
+        """Cumulative T(F) x H(%) / 100 over the full settlement window."""
         if self._weather_df is None or self._weather_df.empty:
             return
 
@@ -280,11 +300,16 @@ class TheoEngine:
 
         theo = round(realized_sum + forecast_sum)
         n_remaining = len(forecast)
-        conf = n_remaining * 3.0
+        conf = n_remaining * 3.0  # Confidence widens by 3.0 per remaining forecast interval
         self._set_theo("WX_SUM", theo, conf)
 
     def _compute_tide_swing(self, now: datetime, settlement: datetime) -> None:
-        """TIDE_SWING = sum of strangle payoffs on 96 15-min tidal diffs."""
+        """TIDE_SWING = sum of strangle payoffs on 96 x 15-min tidal diffs.
+
+        Predicts tidal levels at 97 timestamps (96 intervals of 15 minutes each
+        spanning the competition window), computes the absolute height change per
+        interval in centimeters, and sums the strangle payoff for each interval.
+        """
         if self._tidal_model.coeffs is None:
             return
 
@@ -292,26 +317,34 @@ class TheoEngine:
         # Generate all 96+1 timestamps at 15-min intervals
         times = [start + timedelta(minutes=15 * i) for i in range(97)]
 
-        # Predict levels at all times
+        # Predict tidal levels at all 97 timestamps (96 intervals)
         levels = self._tidal_model.predict_series(times)
-        if any(l is None for l in levels):
+        if any(lvl is None for lvl in levels):
             return
 
         # Compute 15-min diffs in cm and strangle payoffs
         total_payoff = 0.0
         for i in range(96):
             diff_m = abs(levels[i + 1] - levels[i])
-            diff_cm = diff_m * 100.0
+            diff_cm = (
+                diff_m * 100.0
+            )  # Convert absolute height difference to centimeters for strangle payoff
             total_payoff += strangle_value(diff_cm)
 
-        conf = 96.0 * self._tidal_model.confidence_m * 100.0 * 0.1  # rough
+        conf = (
+            96.0 * self._tidal_model.confidence_m * 100.0 * 0.1
+        )  # Propagate tidal model RMSE through 96 strangle payoffs
         self._set_theo("TIDE_SWING", round(total_payoff), max(conf, 50.0))
 
     def _compute_lhr_index(self) -> None:
-        now = datetime.now(timezone.utc)
+        """LHR_INDEX = |sum(flow_i)| from 30-minute binned flight imbalance."""
+        now = datetime.now(UTC)
         if self._flight_data is not None:
             intervals = bin_flights_30min(
-                self._flight_data, SETTLEMENT_WINDOW_START, SETTLEMENT_TIME, now,
+                self._flight_data,
+                SETTLEMENT_WINDOW_START,
+                SETTLEMENT_TIME,
+                now,
             )
             theo, conf = compute_lhr_index(intervals)
             self._set_theo("LHR_INDEX", theo, conf)

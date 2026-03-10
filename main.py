@@ -1,4 +1,5 @@
 """Entry point."""
+
 from bot import TradingBot
 
 if __name__ == "__main__":

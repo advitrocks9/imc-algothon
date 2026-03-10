@@ -6,11 +6,12 @@ On subsequent polls, reads from the cache file instead of calling the API.
 
 Uses withCodeshared=false to count operating flights only (physical movements).
 """
+
 import json
 import logging
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 
 import requests
 
@@ -21,6 +22,7 @@ FLIGHT_CACHE_FILE = os.path.join(os.path.dirname(__file__), "flight_cache.json")
 
 
 # --- AeroDataBox API ---
+
 
 def _fetch_flights_range(
     api_key: str,
@@ -48,8 +50,9 @@ def _fetch_flights_range(
             timeout=30,
         )
         if resp.status_code == 429 and attempt < max_retries:
-            backoff = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
-            log.warning(f"AeroDataBox 429 (attempt {attempt+1}), retrying in {backoff:.0f}s")
+            # Exponential backoff: 2s, 4s, 8s
+            backoff = 2.0 * (2**attempt)
+            log.warning(f"AeroDataBox 429 (attempt {attempt + 1}), retrying in {backoff:.0f}s")
             time.sleep(backoff)
             continue
         resp.raise_for_status()
@@ -75,7 +78,7 @@ def _load_cache(comp_start: datetime, settlement: datetime) -> dict | None:
     if not os.path.exists(FLIGHT_CACHE_FILE):
         return None
     try:
-        with open(FLIGHT_CACHE_FILE, "r") as f:
+        with open(FLIGHT_CACHE_FILE) as f:
             data = json.load(f)
         # Validate cache window matches current config
         cached_start = data.get("_cache_window_start", "")
@@ -100,6 +103,7 @@ def _load_cache(comp_start: datetime, settlement: datetime) -> dict | None:
 
 
 # --- Main integration functions ---
+
 
 def fetch_aerodatabox_flights(
     api_key: str,
@@ -129,9 +133,7 @@ def fetch_aerodatabox_flights(
 
     # Convert to local London time strings for the API
     # AeroDataBox expects local time format: YYYY-MM-DDTHH:MM
-    london_tz = timezone.utc  # Close enough for UTC-based comp times
-
-    # Split into 2 calls of max 12h each
+    # AeroDataBox API has 12h max range; split 24h window into two calls
     midpoint = comp_start + (settlement - comp_start) / 2
 
     from_1 = comp_start.strftime("%Y-%m-%dT%H:%M")
@@ -170,8 +172,7 @@ def fetch_aerodatabox_flights(
     dep_count = result["dep_count"]
     arr_count = result["arr_count"]
     log.info(
-        f"AeroDataBox flights: {dep_count} deps + {arr_count} arrs "
-        f"= {dep_count + arr_count} total"
+        f"AeroDataBox flights: {dep_count} deps + {arr_count} arrs = {dep_count + arr_count} total"
     )
 
     # Save to cache for future polls
@@ -216,6 +217,7 @@ def _fallback_data() -> dict:
 
 # --- Theo computation ---
 
+
 def estimate_total_lhr_count(
     flight_data: dict,
     comp_start: datetime,
@@ -242,7 +244,7 @@ def estimate_total_lhr_count(
 
     for sched_str in departures.values():
         try:
-            t = datetime.fromisoformat(sched_str).replace(tzinfo=timezone.utc)
+            t = datetime.fromisoformat(sched_str).replace(tzinfo=UTC)
             if t <= now:
                 past_count += 1
             else:
@@ -252,7 +254,7 @@ def estimate_total_lhr_count(
 
     for sched_str in arrivals.values():
         try:
-            t = datetime.fromisoformat(sched_str).replace(tzinfo=timezone.utc)
+            t = datetime.fromisoformat(sched_str).replace(tzinfo=UTC)
             if t <= now:
                 past_count += 1
             else:
@@ -260,10 +262,10 @@ def estimate_total_lhr_count(
         except (ValueError, TypeError):
             past_count += 1
 
-    # ~1% cancellation rate for future flights (most are already confirmed)
+    # 1% cancellation rate for scheduled-but-not-yet-departed flights
     theo = int(past_count + future_count * 0.99)
 
-    # Confidence: tight for schedule data, wider when more flights are still future
+    # Confidence tightens as more flights become confirmed (past)
     conf = max(5.0, future_count * 0.3)
 
     log.info(
@@ -274,6 +276,7 @@ def estimate_total_lhr_count(
 
 
 # --- 30-minute binning for LHR_INDEX ---
+
 
 def bin_flights_30min(
     flight_data: dict,
@@ -294,31 +297,31 @@ def bin_flights_30min(
     arr_bins = [0] * total_intervals
     dep_bins = [0] * total_intervals
 
-    for fid, sched_str in departures.items():
+    for _fid, sched_str in departures.items():
         try:
-            t = datetime.fromisoformat(sched_str).replace(tzinfo=timezone.utc)
+            t = datetime.fromisoformat(sched_str).replace(tzinfo=UTC)
             idx = int((t - comp_start).total_seconds() / interval_seconds)
             if 0 <= idx < total_intervals:
                 dep_bins[idx] += 1
         except (ValueError, TypeError):
             continue
 
-    for fid, sched_str in arrivals.items():
+    for _fid, sched_str in arrivals.items():
         try:
-            t = datetime.fromisoformat(sched_str).replace(tzinfo=timezone.utc)
+            t = datetime.fromisoformat(sched_str).replace(tzinfo=UTC)
             idx = int((t - comp_start).total_seconds() / interval_seconds)
             if 0 <= idx < total_intervals:
                 arr_bins[idx] += 1
         except (ValueError, TypeError):
             continue
 
-    return list(zip(arr_bins, dep_bins))
+    return list(zip(arr_bins, dep_bins, strict=False))
 
 
 def compute_lhr_index(intervals: list[tuple[int, int]]) -> tuple[float, float]:
     """Compute LHR_INDEX from 30-min interval data.
 
-    LHR_INDEX = abs(Σ [100 × (arr_i - dep_i) / max(arr_i + dep_i, 1)])
+    LHR_INDEX = abs(sum [100 x (arr_i - dep_i) / max(arr_i + dep_i, 1)])
 
     Returns (index_value, confidence).
     """

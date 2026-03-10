@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from bot_template import OrderBook, OrderRequest, Side
 from execution.executor import ExecutionReport
-from utils.helpers import best_bid, best_ask, snap_to_tick
+from utils.helpers import best_ask, best_bid, snap_to_tick
 
 log = logging.getLogger("scratch")
 
@@ -34,7 +34,7 @@ class ScratchRoutine:
     the same ConcurrentExecutor.
     """
 
-    def __init__(self, aggression_ticks: int = SCRATCH_AGGRESSION_TICKS):
+    def __init__(self, aggression_ticks: int = SCRATCH_AGGRESSION_TICKS) -> None:
         self.aggression_ticks = aggression_ticks
 
     def needs_scratch(self, report: ExecutionReport) -> bool:
@@ -79,7 +79,9 @@ class ScratchRoutine:
 
             # Aggressive price to guarantee fill
             book = books.get(product)
-            price = self._aggressive_price(book, reverse_side, orig_price)
+            price = self._aggressive_price(
+                book, reverse_side, orig_price
+            )  # Price aggressively past the book to guarantee fill on reversal
 
             orders.append(
                 OrderRequest(
@@ -91,7 +93,7 @@ class ScratchRoutine:
             )
             excess_by_leg[product] = excess
 
-            # Estimate cost (positive = loss)
+            # Cost = slippage from original fill price to aggressive reversal price
             if orig_side == Side.BUY:
                 # Bought at orig_price, now selling at (lower) price
                 leg_cost = (orig_price - price) * excess

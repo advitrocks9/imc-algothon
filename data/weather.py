@@ -1,7 +1,9 @@
 """Weather data fetching from Open-Meteo (free, no key required)."""
-import requests
-import pandas as pd
+
 import logging
+
+import pandas as pd
+import requests
 
 log = logging.getLogger("data.weather")
 
@@ -33,11 +35,13 @@ def fetch_weather(past_steps: int = 96, forecast_steps: int = 96) -> pd.DataFram
     )
     resp.raise_for_status()
     m = resp.json()["minutely_15"]
-    df = pd.DataFrame({
-        "time": pd.to_datetime(m["time"]).tz_localize("Europe/London"),
-        "temperature_c": m["temperature_2m"],
-        "humidity": m["relative_humidity_2m"],
-    })
+    df = pd.DataFrame(
+        {
+            "time": pd.to_datetime(m["time"]).tz_localize("Europe/London"),
+            "temperature_c": m["temperature_2m"],
+            "humidity": m["relative_humidity_2m"],
+        }
+    )
     df["temperature_f"] = df["temperature_c"].apply(c_to_f)
     log.info(f"Weather fetched: {len(df)} rows")
     return df

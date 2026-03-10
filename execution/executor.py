@@ -64,20 +64,23 @@ class AsyncExecutor:
       4. If no LON_ETF in the batch (e.g. scratch), fire all concurrently.
     """
 
-    def __init__(self, cmi_url: str, auth_token: str):
+    def __init__(self, cmi_url: str, auth_token: str) -> None:
         self._cmi_url = cmi_url.rstrip("/")
         self._auth_headers = {**STANDARD_HEADERS, "Authorization": auth_token}
 
         # Persistent event loop in a daemon thread
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._loop.run_forever, daemon=True, name="async-executor",
+            target=self._loop.run_forever,
+            daemon=True,
+            name="async-executor",
         )
         self._thread.start()
 
         # Create session on the loop (blocks until ready)
         self._session: aiohttp.ClientSession = asyncio.run_coroutine_threadsafe(
-            self._create_session(), self._loop,
+            self._create_session(),
+            self._loop,
         ).result()
 
     async def _create_session(self) -> aiohttp.ClientSession:
@@ -94,7 +97,8 @@ class AsyncExecutor:
         Blocks the calling thread until all legs complete.
         """
         future = asyncio.run_coroutine_threadsafe(
-            self._async_execute_ioc_batch(orders), self._loop,
+            self._async_execute_ioc_batch(orders),
+            self._loop,
         )
         return future.result()
 
@@ -102,7 +106,8 @@ class AsyncExecutor:
         """Close the aiohttp session and stop the event loop."""
         try:
             asyncio.run_coroutine_threadsafe(
-                self._session.close(), self._loop,
+                self._session.close(),
+                self._loop,
             ).result(timeout=5)
         except Exception:
             pass
@@ -112,7 +117,8 @@ class AsyncExecutor:
     # --- Core async logic ---
 
     async def _async_execute_ioc_batch(
-        self, orders: list[OrderRequest],
+        self,
+        orders: list[OrderRequest],
     ) -> ExecutionReport:
         # Partition into ETF leg and component legs
         etf_order = None
@@ -135,10 +141,7 @@ class AsyncExecutor:
 
         # Step 2: Abort if ETF failed
         if etf_result.filled == 0:
-            log.warning(
-                f"ETF-First: abort — {ETF_SYMBOL} filled 0 "
-                f"(error={etf_result.error})"
-            )
+            log.warning(f"ETF-First: abort — {ETF_SYMBOL} filled 0 (error={etf_result.error})")
             return self._build_report([etf_result], orders)
 
         log.info(
@@ -151,14 +154,16 @@ class AsyncExecutor:
             *[self._send_ioc(o) for o in comp_orders],
         )
 
-        all_results = [etf_result] + list(comp_results)
+        all_results = [etf_result, *list(comp_results)]
         return self._build_report(all_results, orders)
 
     async def _send_ioc(self, order: OrderRequest) -> LegResult:
         """Execute a single IOC: place order, cancel unfilled remainder."""
         resp = await self._send_with_retry(order)
         filled = resp.filled if resp else 0
-        unfilled = resp.volume if resp else 0
+        unfilled = (
+            resp.volume if resp else 0
+        )  # Track remaining volume to cancel unfilled IOC remainder
         error = None if resp else "placement_failed"
 
         # Cancel resting remainder (IOC simulation)
@@ -177,13 +182,15 @@ class AsyncExecutor:
     # --- HTTP with retry ---
 
     async def _send_with_retry(
-        self, order: OrderRequest,
+        self,
+        order: OrderRequest,
     ) -> OrderResponse | None:
         """POST /api/order with exponential backoff on 429 / errors."""
         for attempt in range(MAX_429_RETRIES + 1):
             try:
                 async with self._session.post(
-                    "/api/order", json=asdict(order),
+                    "/api/order",
+                    json=asdict(order),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -191,7 +198,9 @@ class AsyncExecutor:
 
                     text = await resp.text()
                     if resp.status == 429 and attempt < MAX_429_RETRIES:
-                        backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                        backoff = RETRY_BACKOFF_BASE * (
+                            2**attempt
+                        )  # Exponential backoff: 1s, 2s, 4s on rate-limit (429) responses
                         log.warning(
                             f"429 on {order.product} (attempt {attempt + 1}), "
                             f"retry in {backoff:.1f}s"
@@ -199,14 +208,11 @@ class AsyncExecutor:
                         await asyncio.sleep(backoff)
                         continue
 
-                    log.error(
-                        f"Order {order.product} failed: "
-                        f"{resp.status} {text}"
-                    )
+                    log.error(f"Order {order.product} failed: {resp.status} {text}")
             except Exception as e:
                 log.error(f"Order {order.product} exception: {e}")
                 if attempt < MAX_429_RETRIES:
-                    backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    backoff = RETRY_BACKOFF_BASE * (2**attempt)
                     await asyncio.sleep(backoff)
                     continue
 
@@ -222,16 +228,14 @@ class AsyncExecutor:
                     if resp.status in (200, 204):
                         return
                     if resp.status == 429 and attempt < MAX_429_RETRIES:
-                        backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                        backoff = RETRY_BACKOFF_BASE * (2**attempt)
                         await asyncio.sleep(backoff)
                         continue
-                    log.error(
-                        f"Cancel {order_id} failed: {resp.status}"
-                    )
+                    log.error(f"Cancel {order_id} failed: {resp.status}")
             except Exception as e:
                 log.error(f"Cancel {order_id} exception: {e}")
                 if attempt < MAX_429_RETRIES:
-                    backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    backoff = RETRY_BACKOFF_BASE * (2**attempt)
                     await asyncio.sleep(backoff)
                     continue
 
@@ -239,7 +243,8 @@ class AsyncExecutor:
 
     @staticmethod
     def _build_report(
-        results: list[LegResult], original_orders: list[OrderRequest],
+        results: list[LegResult],
+        original_orders: list[OrderRequest],
     ) -> ExecutionReport:
         fills = [lr.filled for lr in results]
         target_vol = original_orders[0].volume if original_orders else 0

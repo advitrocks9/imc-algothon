@@ -11,8 +11,17 @@ Strategy types:
   - derivative_arb: LON_FLY, quote around computed theo from LON_ETF distribution
   - cautious:       LHR_INDEX, wide spread, low confidence
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from config import MAX_POSITION
 from utils.helpers import snap_to_tick
+
+if TYPE_CHECKING:
+    from data.price_tracker import PriceTracker
+    from theo.engine import TheoEngine
 
 # --- Strategy configs per symbol ---
 
@@ -82,6 +91,7 @@ STRATEGY_CONFIGS = {
 
 # --- LON_FLY payoff ---
 
+
 def lon_fly_payoff(s: float) -> float:
     """Compute LON_FLY settlement given LON_ETF settlement value s."""
     return (
@@ -94,7 +104,8 @@ def lon_fly_payoff(s: float) -> float:
 
 # --- ETF synthetic mid (fallback when no theo) ---
 
-def compute_etf_synthetic_mid(price_tracker) -> float | None:
+
+def compute_etf_synthetic_mid(price_tracker: PriceTracker) -> float | None:
     """Sum of component mid prices for LON_ETF fair value."""
     tide = price_tracker.get_mid("TIDE_SPOT")
     wx = price_tracker.get_mid("WX_SPOT")
@@ -105,6 +116,7 @@ def compute_etf_synthetic_mid(price_tracker) -> float | None:
 
 
 # --- Position sizing ---
+
 
 def compute_order_size(
     signal: float,
@@ -125,7 +137,9 @@ def compute_order_size(
     # Scale down building direction as position approaches strategy max,
     # but keep unwinding direction at full size to flatten faster
     pos_ratio = abs(current_position) / max_pos if max_pos > 0 else 1.0
-    build_scale = max(0.2, 1.0 - pos_ratio)
+    build_scale = max(
+        0.2, 1.0 - pos_ratio
+    )  # Scale down building direction as position approaches strategy max
 
     if signal > 0:
         # Theo says buy: larger bids, smaller asks
@@ -159,6 +173,7 @@ def compute_order_size(
 
 # --- Quote pricing ---
 
+
 def compute_quote_prices(
     mid: float,
     signal: float,
@@ -174,12 +189,12 @@ def compute_quote_prices(
     half_spread = config["spread_ticks"] * tick_size / 2.0
     max_pos = config["max_position"]
 
-    # Inventory skew: push quotes to reduce position
+    # Inventory skew: push quotes away from existing position to reduce exposure
     skew = 0.0
     if max_pos > 0:
         skew = -(position / max_pos) * half_spread * 0.5
 
-    # Signal skew: lean toward theo direction
+    # Signal skew: lean toward theo direction (3x amplification)
     signal_skew = signal * half_spread * 3.0
 
     bid_price = snap_to_tick(mid - half_spread + skew + signal_skew, tick_size, "down")
@@ -194,11 +209,12 @@ def compute_quote_prices(
 
 # --- Top-level: compute desired orders for a symbol ---
 
+
 def compute_desired_orders(
     symbol: str,
-    price_tracker,
+    price_tracker: PriceTracker,
     position: int,
-    theo_engine=None,
+    theo_engine: TheoEngine | None = None,
 ) -> tuple[float | None, float | None, int, int]:
     """Returns (bid_price, ask_price, bid_size, ask_size) or Nones if no trade.
 
@@ -307,7 +323,7 @@ def compute_aggressive_ioc(
 
     # Position-aware scaling: reduce aggressive size as position grows
     # in the signal direction. Hard stop at 60% of max_pos.
-    hard_limit = int(max_pos * 0.6)
+    hard_limit = int(max_pos * 0.6)  # Hard cap at 60% of strategy max to prevent position lock-in
 
     if mispricing > 0 and position < max_pos:
         # Theo > market: buy aggressively (lift the ask)

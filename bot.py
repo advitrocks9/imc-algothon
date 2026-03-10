@@ -1,36 +1,53 @@
-"""Main trading bot."""
+"""Main trading bot: orchestrates all strategies, execution, and risk management.
+
+Connects to the CMI exchange via SSE for real-time order book updates and trade
+notifications, then runs a tick-based loop that dispatches arbitrage, aggressive
+directional, and passive market-making strategies across all 8 products.
+"""
+
+import logging
 import os
 import threading
 import time
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Trade, Side
+from bot_template import BaseBot, OrderBook, OrderRequest, OrderResponse, Side, Trade
 from config import (
-    EXCHANGE_URL, USERNAME, PASSWORD, SYMBOLS, GROUP_A, MIN_ARB_EDGE,
-    MAX_SCRATCH_COST, ARB_COOLDOWN_SECONDS, STRATEGY_WARMUP_TICKS,
-    REPRICE_THRESHOLD, STALE_ORDER_SECONDS, AGGRESSIVE_THRESHOLD,
-    AGGRESSIVE_ORDER_SIZE, MAX_POSITION,
-    STOP_LOSS_PNL, STOP_LOSS_CHECK_INTERVAL,
+    AGGRESSIVE_THRESHOLD,
+    ARB_COOLDOWN_SECONDS,
+    EXCHANGE_URL,
+    GROUP_A,
+    MAX_SCRATCH_COST,
+    MIN_ARB_EDGE,
+    PASSWORD,
+    REPRICE_THRESHOLD,
+    STALE_ORDER_SECONDS,
+    STOP_LOSS_CHECK_INTERVAL,
+    STOP_LOSS_PNL,
+    STRATEGY_WARMUP_TICKS,
+    SYMBOLS,
+    USERNAME,
 )
 from data.price_tracker import PriceTracker
 from execution.arbitrage import ArbitrageEngine
-from execution.executor import AsyncExecutor
+from execution.executor import AsyncExecutor, ExecutionReport
 from execution.inventory import InventoryManager
 from execution.order_scheduler import OrderScheduler, RestingOrderManager
 from execution.scratch import ScratchRoutine
 from execution.strategies import (
-    STRATEGY_CONFIGS, compute_desired_orders, compute_aggressive_ioc,
+    STRATEGY_CONFIGS,
+    compute_aggressive_ioc,
+    compute_desired_orders,
 )
 from risk.manager import RiskManager
 from theo.engine import TheoEngine
+from utils.helpers import best_ask, best_bid, mid_price
 from utils.rate_limiter import RateLimiter
-from utils.helpers import mid_price, best_ask, best_bid
 
 # --- Logging setup: console + file in logs/ ---
 os.makedirs("logs", exist_ok=True)
-_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+_timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -43,7 +60,13 @@ log = logging.getLogger("bot")
 
 
 class TradingBot(BaseBot):
-    def __init__(self):
+    """Multi-strategy trading bot for the IMC Algothon 2026 competition.
+
+    Combines theo-based market making, ETF arbitrage, aggressive directional
+    trading, and Monte Carlo derivative pricing across 8 synthetic products.
+    """
+
+    def __init__(self) -> None:
         super().__init__(EXCHANGE_URL, USERNAME, PASSWORD)
         self.risk = RiskManager()
         self.limiter = RateLimiter(max_rps=16.0)
@@ -87,7 +110,6 @@ class TradingBot(BaseBot):
         self._last_pnl_check = 0.0
         self._last_known_pnl: float | None = None
 
-
     # --- SSE Callbacks ---
 
     def on_orderbook(self, orderbook: OrderBook) -> None:
@@ -121,26 +143,32 @@ class TradingBot(BaseBot):
     # --- Rate-Limited REST Wrappers ---
 
     def safe_get_positions(self) -> dict[str, int]:
+        """Rate-limited wrapper around get_positions()."""
         self.limiter.acquire()
         return self.get_positions()
 
     def safe_get_orderbook(self, symbol: str) -> OrderBook:
+        """Rate-limited wrapper around get_orderbook()."""
         self.limiter.acquire()
         return self.get_orderbook(symbol)
 
     def safe_send_order(self, order: OrderRequest) -> OrderResponse | None:
+        """Rate-limited wrapper around send_order()."""
         self.limiter.acquire()
         return self.send_order(order)
 
     def safe_cancel_order(self, order_id: str) -> None:
+        """Rate-limited wrapper around cancel_order()."""
         self.limiter.acquire()
         self.cancel_order(order_id)
 
     def safe_get_pnl(self) -> dict:
+        """Rate-limited wrapper around get_pnl()."""
         self.limiter.acquire()
         return self.get_pnl()
 
     def safe_get_orders(self, product: str | None = None) -> list[dict]:
+        """Rate-limited wrapper around get_orders()."""
         self.limiter.acquire()
         return self.get_orders(product)
 
@@ -283,7 +311,7 @@ class TradingBot(BaseBot):
         if now - self._last_emergency_unwind < 1.0:
             return  # only attempt every 1 second (16 req/sec budget)
 
-        UNWIND_THRESHOLD = 60  # start unwinding when abs(pos) >= this
+        UNWIND_THRESHOLD = 60  # absolute position triggering emergency unwind
         COMPONENT_SYMBOLS = ["TIDE_SPOT", "WX_SPOT", "LHR_COUNT"]
 
         for symbol in COMPONENT_SYMBOLS:
@@ -336,19 +364,28 @@ class TradingBot(BaseBot):
 
             position = self.inventory.get_position(symbol)
             bid_price, ask_price, bid_size, ask_size = compute_desired_orders(
-                symbol, self.price_tracker, position,
+                symbol,
+                self.price_tracker,
+                position,
                 theo_engine=self.theo_engine,
             )
 
             need_bid, need_ask = self.resting_orders.needs_update(
-                symbol, bid_price, ask_price,
+                symbol,
+                bid_price,
+                ask_price,
             )
 
             if need_bid or need_ask:
                 fut = self._pool.submit(
                     self._reconcile_orders,
-                    symbol, bid_price, ask_price, bid_size, ask_size,
-                    need_bid, need_ask,
+                    symbol,
+                    bid_price,
+                    ask_price,
+                    bid_size,
+                    ask_size,
+                    need_bid,
+                    need_ask,
                 )
                 futures.append(fut)
 
@@ -391,7 +428,11 @@ class TradingBot(BaseBot):
             sym_best_bid = best_bid(book) if book else None
 
             result = compute_aggressive_ioc(
-                symbol, market_mid, theo, position, config,
+                symbol,
+                market_mid,
+                theo,
+                position,
+                config,
                 threshold=AGGRESSIVE_THRESHOLD,
                 best_ask=sym_best_ask,
                 best_bid=sym_best_bid,
@@ -405,11 +446,13 @@ class TradingBot(BaseBot):
             log.info(
                 f"AGGRESSIVE: {symbol} {side_str} {size}x @ {price} "
                 f"(theo={theo:.0f}, market={market_mid:.0f}, "
-                f"mispricing={(theo-market_mid)/theo*100:.2f}%)"
+                f"mispricing={(theo - market_mid) / theo * 100:.2f}%)"
             )
 
             order = OrderRequest(symbol, price, side, size)
-            futures.append(self._pool.submit(self._execute_aggressive_ioc, symbol, order, side_str, price, now))
+            futures.append(
+                self._pool.submit(self._execute_aggressive_ioc, symbol, order, side_str, price, now)
+            )
 
         # Wait for all aggressive IOCs to complete
         for fut in as_completed(futures):
@@ -418,7 +461,9 @@ class TradingBot(BaseBot):
             except Exception as e:
                 log.error(f"Aggressive IOC error: {e}")
 
-    def _execute_aggressive_ioc(self, symbol: str, order: OrderRequest, side_str: str, price: float, now: float) -> None:
+    def _execute_aggressive_ioc(
+        self, symbol: str, order: OrderRequest, side_str: str, price: float, now: float
+    ) -> None:
         """Execute a single aggressive IOC (runs in thread pool)."""
         resp = self.safe_send_ioc(order)
         if resp and resp.filled > 0:
@@ -460,9 +505,7 @@ class TradingBot(BaseBot):
                 if resp:
                     self.resting_orders.record_order(symbol, "BUY", resp.id, bid_price)
                     if resp.filled > 0:
-                        log.info(
-                            f"STRAT BID FILL: {symbol} BUY {resp.filled}x @ {bid_price}"
-                        )
+                        log.info(f"STRAT BID FILL: {symbol} BUY {resp.filled}x @ {bid_price}")
 
         # Cancel stale ask
         if need_ask:
@@ -481,9 +524,7 @@ class TradingBot(BaseBot):
                 if resp:
                     self.resting_orders.record_order(symbol, "SELL", resp.id, ask_price)
                     if resp.filled > 0:
-                        log.info(
-                            f"STRAT ASK FILL: {symbol} SELL {resp.filled}x @ {ask_price}"
-                        )
+                        log.info(f"STRAT ASK FILL: {symbol} SELL {resp.filled}x @ {ask_price}")
 
     # --- PnL Logging ---
 
@@ -503,7 +544,7 @@ class TradingBot(BaseBot):
 
     # --- Scratch & Sync ---
 
-    def _execute_scratch(self, report) -> None:
+    def _execute_scratch(self, report: ExecutionReport) -> None:
         """Handle partial fills by reversing excess positions."""
         with self._books_lock:
             fresh_books = dict(self._books)
@@ -537,9 +578,7 @@ class TradingBot(BaseBot):
                 + (f" ERROR={lr.error}" if lr.error else "")
             )
 
-        unfilled_scratch = [
-            lr for lr in scratch_report.legs if lr.filled < lr.order.volume
-        ]
+        unfilled_scratch = [lr for lr in scratch_report.legs if lr.filled < lr.order.volume]
         if unfilled_scratch:
             log.error(
                 f"SCRATCH INCOMPLETE: {len(unfilled_scratch)} legs not fully filled. "

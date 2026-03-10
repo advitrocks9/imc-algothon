@@ -8,12 +8,13 @@ Volume is clamped to the "weakest link" — the minimum of:
   - position limit headroom on all 4 legs
   - available book depth at the targeted price for all 4 legs
 """
+
 import logging
 import time
 
 from bot_template import OrderBook, OrderRequest, Side
 from config import MAX_POSITION, MIN_BOOK_DEPTH
-from utils.helpers import best_bid_with_volume, best_ask_with_volume
+from utils.helpers import best_ask_with_volume, best_bid_with_volume
 
 log = logging.getLogger("arb")
 
@@ -22,7 +23,7 @@ ETF_SYMBOL = "LON_ETF"
 
 
 class ArbitrageEngine:
-    def __init__(self, min_edge: float = 2.0):
+    def __init__(self, min_edge: float = 2.0) -> None:
         """
         Args:
             min_edge: Minimum price discrepancy to trigger arb.
@@ -50,7 +51,9 @@ class ArbitrageEngine:
 
         # Position-aware gating: skip arb if any leg is near position limit
         # on the side that would increase exposure (>70% of MAX_POSITION)
-        pos_limit_70 = int(MAX_POSITION * 0.7)
+        pos_limit_70 = int(
+            MAX_POSITION * 0.7
+        )  # Gate arb when any leg exceeds 70% of exchange position limit
         etf_pos = positions.get(ETF_SYMBOL, 0)
         for s in COMPONENT_SYMBOLS:
             comp_pos = positions.get(s, 0)
@@ -87,8 +90,10 @@ class ArbitrageEngine:
         comp_bid_vols = {s: info[1] for s, info in comp_bid_infos.items()}
 
         # Case 1: ETF overpriced -> sell ETF (hit bid), buy components (lift asks)
-        comp_ask_sum = sum(comp_asks.values())
-        edge_sell_etf = etf_bid - comp_ask_sum
+        comp_ask_sum = sum(comp_asks.values())  # Synthetic ETF fair value from component ask prices
+        edge_sell_etf = (
+            etf_bid - comp_ask_sum
+        )  # Positive edge = ETF overpriced relative to components
         if edge_sell_etf >= self.min_edge:
             book_vols = {ETF_SYMBOL: etf_bid_vol}
             book_vols.update(comp_ask_vols)
@@ -100,8 +105,13 @@ class ArbitrageEngine:
                 return []
 
             vol, bottleneck = self._safe_volume(
-                max_volume, ETF_SYMBOL, Side.SELL,
-                COMPONENT_SYMBOLS, Side.BUY, positions, book_vols,
+                max_volume,
+                ETF_SYMBOL,
+                Side.SELL,
+                COMPONENT_SYMBOLS,
+                Side.BUY,
+                positions,
+                book_vols,
             )
             if vol > 0:
                 log.info(
@@ -111,10 +121,7 @@ class ArbitrageEngine:
                     f"book_depths={book_vols}"
                 )
             elif time.monotonic() - self._last_blocked_log > 30:
-                log.info(
-                    f"ARB BLOCKED: Sell ETF edge={edge_sell_etf:.1f}, "
-                    f"bottleneck={bottleneck}"
-                )
+                log.info(f"ARB BLOCKED: Sell ETF edge={edge_sell_etf:.1f}, bottleneck={bottleneck}")
                 self._last_blocked_log = time.monotonic()
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_bid, Side.SELL, vol)]
@@ -136,8 +143,13 @@ class ArbitrageEngine:
                 return []
 
             vol, bottleneck = self._safe_volume(
-                max_volume, ETF_SYMBOL, Side.BUY,
-                COMPONENT_SYMBOLS, Side.SELL, positions, book_vols,
+                max_volume,
+                ETF_SYMBOL,
+                Side.BUY,
+                COMPONENT_SYMBOLS,
+                Side.SELL,
+                positions,
+                book_vols,
             )
             if vol > 0:
                 log.info(
@@ -147,10 +159,7 @@ class ArbitrageEngine:
                     f"book_depths={book_vols}"
                 )
             elif time.monotonic() - self._last_blocked_log > 30:
-                log.info(
-                    f"ARB BLOCKED: Buy ETF edge={edge_buy_etf:.1f}, "
-                    f"bottleneck={bottleneck}"
-                )
+                log.info(f"ARB BLOCKED: Buy ETF edge={edge_buy_etf:.1f}, bottleneck={bottleneck}")
                 self._last_blocked_log = time.monotonic()
             if vol > 0:
                 orders = [OrderRequest(ETF_SYMBOL, etf_ask, Side.BUY, vol)]
